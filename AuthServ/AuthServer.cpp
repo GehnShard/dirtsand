@@ -734,8 +734,8 @@ void cb_getPublicAges(AuthServer_Private& client)
 
             client.m_buffer.write<uint32_t>(msg.m_ages[i].m_sequence);
             client.m_buffer.write<uint32_t>(msg.m_ages[i].m_language);
-            client.m_buffer.write<uint32_t>(0);  // TODO: Owner population
             client.m_buffer.write<uint32_t>(msg.m_ages[i].m_population);
+            client.m_buffer.write<uint32_t>(msg.m_ages[i].m_curPopulation);
         }
     }
 
@@ -885,13 +885,7 @@ void* wk_authWorker(void* sockp)
     client.m_channel.getMessage();
 
     pthread_mutex_lock(&s_authClientMutex);
-    auto client_iter = s_authClients.begin();
-    while (client_iter != s_authClients.end()) {
-        if (*client_iter == &client)
-            client_iter = s_authClients.erase(client_iter);
-        else
-            ++client_iter;
-    }
+    s_authClients.remove(&client);
     pthread_mutex_unlock(&s_authClientMutex);
 
     DS::CryptStateFree(client.m_crypt);
