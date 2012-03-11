@@ -78,7 +78,7 @@ static uint32_t find_a_friendly_neighborhood_for_our_new_visitor(uint32_t player
         return 0;
     }
 
-    std::pair<uint32_t, uint32_t> ageNode;
+    std::tuple<uint32_t, uint32_t> ageNode;
     DS::Uuid ageId;
     if (PQntuples(result) != 0) {
         ageId = DS::Uuid(PQgetvalue(result, 0, 0));
@@ -98,7 +98,7 @@ static uint32_t find_a_friendly_neighborhood_for_our_new_visitor(uint32_t player
             return 0;
         }
         DS_DASSERT(PQntuples(result) == 1);
-        ageNode.second = strtoul(PQgetvalue(result, 0, 0), 0, 10);
+        std::get<1>(ageNode) = strtoul(PQgetvalue(result, 0, 0), 0, 10);
         PQclear(result);
     } else {
         PQclear(result);
@@ -110,13 +110,13 @@ static uint32_t find_a_friendly_neighborhood_for_our_new_visitor(uint32_t player
         age.m_description = "GoW Neighborhood";
         age.m_seqNumber = -1;   // Auto-generate
         ageNode = v_create_age(age, e_AgePublic);
-        if (ageNode.second == 0)
+        if (std::get<1>(ageNode) == 0)
             return 0;
     }
 
     {
         PostgresStrings<2> parms;
-        parms.set(0, ageNode.second);
+        parms.set(0, std::get<1>(ageNode));
         parms.set(1, DS::Vault::e_AgeOwnersFolder);
         result = PQexecParams(s_postgres,
                 "SELECT idx FROM vault.find_folder($1, $2);",
@@ -152,7 +152,7 @@ static uint32_t find_a_friendly_neighborhood_for_our_new_visitor(uint32_t player
     }
     PQclear(result);
 
-    return ageNode.second;
+    return std::get<1>(ageNode);
 }
 
 static uint32_t find_public_age_1(const DS::String& filename)
@@ -316,7 +316,7 @@ bool dm_vault_init()
 
         std::list<AuthServer_AgeInfo> ages = configure_static_ages();
         for (auto iter = ages.begin(); iter != ages.end(); ++iter) {
-            if (v_create_age(*iter, e_AgePublic).first == 0)
+            if (std::get<0>(v_create_age(*iter, e_AgePublic)) == 0)
                 return false;
         }
     } else {
@@ -328,7 +328,7 @@ bool dm_vault_init()
     return true;
 }
 
-std::pair<uint32_t, uint32_t>
+std::tuple<uint32_t, uint32_t>
 v_create_age(AuthServer_AgeInfo age, uint32_t flags)
 {
     if (age.m_ageId.isNull())
@@ -528,15 +528,15 @@ v_create_age(AuthServer_AgeInfo age, uint32_t flags)
             fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
                     __FILE__, __LINE__, PQerrorMessage(s_postgres));
             PQclear(result);
-            return std::make_pair(0, 0);
+            return std::make_tuple(0, 0);
         }
         PQclear(result);
     }
 
-    return std::make_pair(ageNode, ageInfoNode);
+    return std::make_tuple(ageNode, ageInfoNode);
 }
 
-std::pair<uint32_t, uint32_t>
+std::tuple<uint32_t, uint32_t>
 v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
 {
     DS::Vault::Node node;
@@ -548,7 +548,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_IString64_1(player.m_playerName);
     uint32_t playerIdx = v_create_node(node);
     if (playerIdx == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodePlayerInfo);
@@ -558,7 +558,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_IString64_1(player.m_playerName);
     uint32_t playerInfoNode = v_create_node(node);
     if (playerInfoNode == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodePlayerInfoList);
@@ -567,7 +567,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_BuddyListFolder);
     uint32_t buddyList = v_create_node(node);
     if (buddyList == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodePlayerInfoList);
@@ -576,7 +576,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_IgnoreListFolder);
     uint32_t ignoreList = v_create_node(node);
     if (ignoreList == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeFolder);
@@ -585,7 +585,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_PlayerInviteFolder);
     uint32_t invites = v_create_node(node);
     if (invites == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeAgeInfoList);
@@ -594,7 +594,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_AgesIOwnFolder);
     uint32_t agesNode = v_create_node(node);
     if (agesNode == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeFolder);
@@ -603,7 +603,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_AgeJournalsFolder);
     uint32_t journals = v_create_node(node);
     if (journals == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeFolder);
@@ -612,7 +612,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_ChronicleFolder);
     uint32_t chronicles = v_create_node(node);
     if (chronicles == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeAgeInfoList);
@@ -621,7 +621,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_AgesICanVisitFolder);
     uint32_t visitFolder = v_create_node(node);
     if (visitFolder == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeFolder);
@@ -630,7 +630,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_AvatarOutfitFolder);
     uint32_t outfit = v_create_node(node);
     if (outfit == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeFolder);
@@ -639,7 +639,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_AvatarClosetFolder);
     uint32_t closet = v_create_node(node);
     if (closet == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeFolder);
@@ -648,7 +648,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_InboxFolder);
     uint32_t inbox = v_create_node(node);
     if (inbox == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodePlayerInfoList);
@@ -657,7 +657,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Int32_1(DS::Vault::e_PeopleIKnowAboutFolder);
     uint32_t peopleNode = v_create_node(node);
     if (peopleNode == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     DS::Blob link(reinterpret_cast<const uint8_t*>("Default:LinkInPointDefault:;"),
                   strlen("Default:LinkInPointDefault:;"));
@@ -668,7 +668,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Blob_1(link);
     uint32_t reltoLink = v_create_node(node);
     if (reltoLink == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeAgeLink);
@@ -677,7 +677,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Blob_1(link);
     uint32_t hoodLink = v_create_node(node);
     if (hoodLink == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     link = DS::Blob(reinterpret_cast<const uint8_t*>("Ferry Terminal:LinkInPointFerry:;"),
                     strlen("Ferry Terminal:LinkInPointFerry:;"));
@@ -688,7 +688,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Blob_1(link);
     uint32_t cityLink = v_create_node(node);
     if (hoodLink == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     
     link = DS::Blob(reinterpret_cast<const uint8_t*>("Great Zero Observation:LinkInPointDefault:;"),
                     strlen("Great Zero Observation:LinkInPointDefault:;"));
@@ -700,7 +700,7 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     node.set_Blob_1(link);
     uint32_t gzLink = v_create_node(node);
     if (gzLink == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     AuthServer_AgeInfo relto;
     relto.m_ageId = gen_uuid();
@@ -708,13 +708,13 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     relto.m_instName = "Relto";
     relto.m_userName = player.m_playerName + "'s";
     relto.m_description = relto.m_userName + " " + relto.m_instName;
-    std::pair<uint32_t, uint32_t> reltoAge = v_create_age(relto, 0);
-    if (reltoAge.first == 0)
-        return std::make_pair(0, 0);
+    std::tuple<uint32_t, uint32_t> reltoAge = v_create_age(relto, 0);
+    if (std::get<0>(reltoAge) == 0)
+        return std::make_tuple(0, 0);
 
     {
         PostgresStrings<2> parms;
-        parms.set(0, reltoAge.second);
+        parms.set(0, std::get<1>(reltoAge));
         parms.set(1, DS::Vault::e_AgeOwnersFolder);
         PGresult* result = PQexecParams(s_postgres,
                 "SELECT idx FROM vault.find_folder($1, $2);",
@@ -723,72 +723,72 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
             fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                     __FILE__, __LINE__, PQerrorMessage(s_postgres));
             PQclear(result);
-            return std::make_pair(0, 0);
+            return std::make_tuple(0, 0);
         }
         DS_DASSERT(PQntuples(result) == 1);
         uint32_t ownerFolder = strtoul(PQgetvalue(result, 0, 0), 0, 10);
         PQclear(result);
 
         if (!v_ref_node(ownerFolder, playerInfoNode, 0))
-            return std::make_pair(0, 0);
+            return std::make_tuple(0, 0);
     }
 
     uint32_t hoodAge = find_a_friendly_neighborhood_for_our_new_visitor(playerInfoNode);
     if (hoodAge == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     uint32_t cityAge = find_public_age_1("city");
     if (cityAge == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     uint32_t gzAge = find_public_age_1("GreatZero");
     if (gzAge == 0)
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
 
     if (!v_ref_node(playerIdx, s_systemNode, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, playerInfoNode, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, buddyList, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, ignoreList, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, invites, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, agesNode, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, journals, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, chronicles, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, visitFolder, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, outfit, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, closet, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, inbox, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(playerIdx, peopleNode, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(agesNode, reltoLink, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(agesNode, hoodLink, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(agesNode, cityLink, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(agesNode, gzLink, 0))
-        return std::make_pair(0, 0);
-    if (!v_ref_node(reltoLink, reltoAge.second, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
+    if (!v_ref_node(reltoLink, std::get<1>(reltoAge), 0))
+        return std::make_tuple(0, 0);
     if (!v_ref_node(hoodLink, hoodAge, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(cityLink, cityAge, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
     if (!v_ref_node(gzLink, gzAge, 0))
-        return std::make_pair(0, 0);
-    if (!v_ref_node(reltoAge.first, agesNode, 0))
-        return std::make_pair(0, 0);
+        return std::make_tuple(0, 0);
+    if (!v_ref_node(std::get<0>(reltoAge), agesNode, 0))
+        return std::make_tuple(0, 0);
 
-    return std::make_pair(playerIdx, playerInfoNode);
+    return std::make_tuple(playerIdx, playerInfoNode);
 }
 
 uint32_t v_create_node(const DS::Vault::Node& node)
