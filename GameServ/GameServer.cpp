@@ -2,16 +2,16 @@
  * This file is part of dirtsand.                                             *
  *                                                                            *
  * dirtsand is free software: you can redistribute it and/or modify           *
- * it under the terms of the GNU General Public License as published by       *
- * the Free Software Foundation, either version 3 of the License, or          *
- * (at your option) any later version.                                        *
+ * it under the terms of the GNU Affero General Public License as             *
+ * published by the Free Software Foundation, either version 3 of the         *
+ * License, or (at your option) any later version.                            *
  *                                                                            *
  * dirtsand is distributed in the hope that it will be useful,                *
  * but WITHOUT ANY WARRANTY; without even the implied warranty of             *
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the              *
- * GNU General Public License for more details.                               *
+ * GNU Affero General Public License for more details.                        *
  *                                                                            *
- * You should have received a copy of the GNU General Public License          *
+ * You should have received a copy of the GNU Affero General Public License   *
  * along with dirtsand.  If not, see <http://www.gnu.org/licenses/>.          *
  ******************************************************************************/
 
@@ -77,10 +77,12 @@ void game_client_init(GameClient_Private& client)
 
 GameHost_Private* find_game_host(uint32_t ageMcpId)
 {
-    std::lock_guard<std::mutex> gameHostGuard(s_gameHostMutex);
-    hostmap_t::iterator host_iter = s_gameHosts.find(ageMcpId);
-    if (host_iter != s_gameHosts.end())
-        return host_iter->second;
+    {
+        std::lock_guard<std::mutex> gameHostGuard(s_gameHostMutex);
+        hostmap_t::iterator host_iter = s_gameHosts.find(ageMcpId);
+        if (host_iter != s_gameHosts.end())
+            return host_iter->second;
+    }
     return start_game_host(ageMcpId);
 }
 
