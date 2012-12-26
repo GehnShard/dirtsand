@@ -79,7 +79,7 @@ void dm_auth_shutdown()
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     if (!complete)
-        fprintf(stderr, "[Auth] Clients didn't die after 5 seconds!\n");
+        fputs("[Auth] Clients didn't die after 5 seconds!\n", stderr);
 
     PQfinish(s_postgres);
 }
@@ -398,9 +398,15 @@ void dm_auth_createPlayer(Auth_PlayerCreate* msg)
     PQclear(result);
 
     AuthServer_Private* client = reinterpret_cast<AuthServer_Private*>(msg->m_client);
-    msg->m_player.m_playerId = std::get<0>(v_create_player(client->m_acctUuid, msg->m_player));
+    std::tuple<uint32_t, uint32_t, uint32_t> player =
+        v_create_player(client->m_acctUuid, msg->m_player);
+    msg->m_player.m_playerId = std::get<0>(player);
     if (msg->m_player.m_playerId == 0)
         SEND_REPLY(msg, DS::e_NetInternalError);
+
+    // Tell neighborhood about its new member
+    v_ref_node(std::get<2>(player), std::get<1>(player), std::get<0>(player));
+    dm_auth_bcast_ref({std::get<2>(player), std::get<1>(player), std::get<0>(player), 0});
 
     PostgresStrings<5> iparms;
     iparms.set(0, client->m_acctUuid.toString());
@@ -637,143 +643,54 @@ void dm_auth_findAge(Auth_GameAge* msg)
 
 void dm_auth_get_public(Auth_PubAgeRequest* msg)
 {
-    PostgresStrings<1> parms;
-    parms.set(0, msg->m_agename);
-    PGresult* result = PQexecParams(s_postgres,
-                                    "SELECT idx, \"AgeUuid\", \"AgeInstName\", \"AgeUserName\", \"AgeDesc\", \"SeqNumber\", \"Language\", \"CurrentPopulation\", \"Population\" FROM game.\"PublicAges\""
-                                    "    WHERE \"AgeFilename\"=$1",
-                                    1, 0, parms.m_values, 0, 0, 0);
-    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
-                __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
+    if (v_find_public_ages(msg->m_agename, msg->m_ages))
+        SEND_REPLY(msg, DS::e_NetSuccess);
+    else
         SEND_REPLY(msg, DS::e_NetInternalError);
-        return;
-    }
-    for (int i = 0; i < PQntuples(result); i++) {
-        Auth_PubAgeRequest::NetAgeInfo ai;
-        ai.m_instance = DS::Uuid(PQgetvalue(result, i, 1));
-        ai.m_instancename = PQgetvalue(result, i, 2);
-        ai.m_username = PQgetvalue(result, i, 3);
-        ai.m_description = PQgetvalue(result, i, 4);
-        ai.m_sequence = strtoul(PQgetvalue(result, i, 5), 0, 10);
-        ai.m_language = strtoul(PQgetvalue(result, i, 6), 0, 10);
-        ai.m_curPopulation = strtoul(PQgetvalue(result, i, 7), 0, 10);
-        ai.m_population = strtoul(PQgetvalue(result, i, 8), 0, 10);
-        msg->m_ages.push_back(ai);
-    }
-    PQclear(result);
-    SEND_REPLY(msg, DS::e_NetSuccess);
 }
 
 uint32_t dm_auth_set_public(uint32_t nodeid)
 {
-    PostgresStrings<8> parms;
-    parms.set(0, nodeid);
-    parms.set(1, DS::Vault::e_NodeAgeInfo);
-    PGresult* result = PQexecParams(s_postgres,
-                                    "SELECT \"Uuid_1\", \"String64_2\", \"String64_3\", \"String64_4\", \"Text_1\", \"Int32_1\", \"Int32_3\" FROM vault.\"Nodes\""
-                                    "    WHERE idx=$1 AND \"NodeType\"=$2",
-                                    2, 0, parms.m_values, 0, 0, 0);
-    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
-                __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
-        return DS::e_NetInternalError;
-    }
-    if (PQntuples(result) == 0) {
-        // the requested age wasn't public, so we throw an error
-        PQclear(result);
-        return DS::e_NetInvalidParameter;
-    }
-    parms.set(0, PQgetvalue(result, 0, 0));
-    parms.set(1, PQgetvalue(result, 0, 1));
-    parms.set(2, PQgetvalue(result, 0, 2));
-    parms.set(3, PQgetvalue(result, 0, 3));
-    parms.set(4, PQgetvalue(result, 0, 4));
-    parms.set(5, PQgetvalue(result, 0, 5));
-    parms.set(6, PQgetvalue(result, 0, 6));
-    parms.set(7, DS::GameServer_GetNumClients(DS::Uuid(PQgetvalue(result, 0, 0))));
-
-    PQclear(result);
-    result = PQexecParams(s_postgres,
-                          "INSERT INTO game.\"PublicAges\" (\"AgeUuid\", \"AgeFilename\", \"AgeInstName\", \"AgeUserName\", \"AgeDesc\", \"SeqNumber\", \"Language\", \"CurrentPopulation\", \"Population\")"
-                          "    VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, 0 )",
-                          8, 0, parms.m_values, 0, 0, 0);
-    if (PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
-                __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
-        return DS::e_NetInternalError;
-    }
-
-    parms.set(0, DS::Vault::e_NodeAgeInfo);
+    PostgresStrings<3> parms;
+    parms.set(0, (uint32_t)time(0));
     parms.set(1, nodeid);
-    result = PQexecParams(s_postgres,
-                          "UPDATE vault.\"Nodes\" SET"
-                          "    \"Int32_2\"=1"
-                          "    WHERE \"NodeType\"=$1 AND idx=$2",
-                          2, 0, parms.m_values, 0, 0, 0);
+    parms.set(2, DS::Vault::e_NodeAgeInfo);
+    PGresult* result = PQexecParams(s_postgres,"UPDATE vault.\"Nodes\" SET"
+                       "    \"ModifyTime\"=$1, \"Int32_2\"=1 WHERE idx=$2"
+                       "     AND \"NodeType\"=$3",
+                       3, 0, parms.m_values, 0, 0, 0);
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres UPDATE error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-      // This doesn't block continuing...
+        PQclear(result);
+        return DS::e_NetInternalError;
     } else {
         dm_auth_bcast_node(nodeid, gen_uuid());
+        PQclear(result);
+        return DS::e_NetSuccess;
     }
-
-    return DS::e_NetSuccess;
 }
 
 uint32_t dm_auth_set_private(uint32_t nodeid)
 {
-    PostgresStrings<4> parms;
-    parms.set(0, nodeid);
+    PostgresStrings<3> parms;
+    parms.set(0, (uint32_t)time(0));
     parms.set(1, DS::Vault::e_NodeAgeInfo);
-    PGresult* result = PQexecParams(s_postgres,
-                                    "SELECT \"Uuid_1\" FROM vault.\"Nodes\" WHERE idx=$1 AND \"NodeType\"=$2",
-                                    2, 0, parms.m_values, 0, 0, 0);
-    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
-                __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
-        return DS::e_NetInternalError;
-    }
-    if (PQntuples(result) == 0) {
-        fprintf(stderr, "%s:%d:\n    No such ageinfo node: %d\n",
-                __FILE__, __LINE__, nodeid);
-        // the requested age doesn't exist
-        PQclear(result);
-        return DS::e_NetInvalidParameter;
-    }
-
-    parms.set(0, PQgetvalue(result, 0, 0));
-    result = PQexecParams(s_postgres,
-                          "DELETE FROM game.\"PublicAges\" WHERE \"AgeUuid\"=$1",
-                          1, 0, parms.m_values, 0, 0, 0);
-    if (PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "%s:%d:\n    Postgres DELETE error: %s\n",
-                __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
-        return DS::e_NetInternalError;
-    }
-
-    parms.set(0, DS::Vault::e_NodeAgeInfo);
-    parms.set(1, nodeid);
-    result = PQexecParams(s_postgres,
-                          "UPDATE vault.\"Nodes\" SET"
-                          "    \"Int32_2\"=0"
-                          "    WHERE \"NodeType\"=$1 AND idx=$2",
-                          2, 0, parms.m_values, 0, 0, 0);
+    parms.set(2, nodeid);
+    PGresult* result = PQexecParams(s_postgres, "UPDATE vault.\"Nodes\" SET"
+                       "    \"Int32_2\"=0, \"ModifyTime\"=$1"
+                       "    WHERE \"NodeType\"=$2 AND idx=$3",
+                       3, 0, parms.m_values, 0, 0, 0);
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres UPDATE error: %s\n",
                  __FILE__, __LINE__, PQerrorMessage(s_postgres));
-         // This doesn't block continuing...
+        PQclear(result);
+        return DS::e_NetInternalError;
     } else {
         dm_auth_bcast_node(nodeid, gen_uuid());
+        PQclear(result);
+        return DS::e_NetSuccess;
     }
-
-    return DS::e_NetSuccess;
 }
 
 void dm_auth_set_pub_priv(Auth_SetPublic* msg)
@@ -784,6 +701,154 @@ void dm_auth_set_pub_priv(Auth_SetPublic* msg)
     else
         result = dm_auth_set_private(msg->m_node);
     SEND_REPLY(msg, result);
+}
+
+void dm_auth_createScore(Auth_CreateScore* msg)
+{
+    PostgresStrings<4> parms;
+    parms.set(0, msg->m_owner);
+    parms.set(1, msg->m_type);
+    parms.set(2, msg->m_name);
+    parms.set(3, msg->m_points);
+    PGresult* result = PQexecParams(s_postgres,
+                                    "SELECT auth.create_score($1, $2, $3, $4);",
+                                    4, 0, parms.m_values, 0, 0, 0);
+    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
+                __FILE__, __LINE__, PQerrorMessage(s_postgres));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    }
+    msg->m_scoreId = strtoul(PQgetvalue(result, 0, 0), 0, 10);
+    PQclear(result);
+    if (msg->m_scoreId == static_cast<uint32_t>(-1))
+        SEND_REPLY(msg, DS::e_NetScoreAlreadyExists);
+    else
+        SEND_REPLY(msg, DS::e_NetSuccess);
+}
+
+void dm_auth_getScores(Auth_GetScores* msg)
+{
+    PostgresStrings<2> parms;
+    parms.set(0, msg->m_owner);
+    parms.set(1, msg->m_name);
+    PGresult* result = PQexecParams(s_postgres,
+                                    "SELECT idx, \"CreateTime\", \"Type\", \"Points\""
+                                    "    FROM auth.\"Scores\" WHERE \"OwnerIdx\"=$1 AND"
+                                    "    \"Name\"=$2",
+                                    2, 0, parms.m_values, 0, 0, 0);
+    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
+                __FILE__, __LINE__, PQerrorMessage(s_postgres));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    }
+    msg->m_scores.reserve(PQntuples(result));
+    for (int i = 0; i < PQntuples(result); ++i) {
+        Auth_GetScores::GameScore score;
+        score.m_scoreId = strtoul(PQgetvalue(result, i, 0), 0, 10);
+        score.m_createTime = strtoul(PQgetvalue(result, i, 1), 0, 10);
+        score.m_type = strtoul(PQgetvalue(result, i, 2), 0, 10);
+        score.m_points = strtoul(PQgetvalue(result, i, 3), 0, 10);
+        msg->m_scores.push_back(score);
+    }
+    PQclear(result);
+    SEND_REPLY(msg, DS::e_NetSuccess);
+}
+
+void dm_auth_addScorePoints(Auth_UpdateScore* msg)
+{
+    PostgresStrings<3> parms;
+    parms.set(0, msg->m_scoreId);
+    PGresult* result = PQexecParams(s_postgres,
+                                   "SELECT \"Type\" FROM auth.\"Scores\" WHERE idx=$1",
+                                    1, 0, parms.m_values, 0, 0, 0);
+    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
+                __FILE__, __LINE__, PQerrorMessage(s_postgres));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    }
+    if (PQntuples(result) != 1) {
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetScoreNoDataFound);
+        return;
+    }
+    uint32_t scoreType = strtoul(PQgetvalue(result, 0, 0), 0, 10);
+    PQclear(result);
+    if (scoreType == Auth_UpdateScore::e_Fixed) {
+        SEND_REPLY(msg, DS::e_NetScoreWrongType);
+        return;
+    }
+
+    // Passed all sanity checks, update score.
+    parms.set(1, msg->m_points);
+    parms.set(2, static_cast<uint32_t>(scoreType == Auth_UpdateScore::e_Golf));
+    result = PQexecParams(s_postgres,
+                          "SELECT auth.add_score_points($1, $2, $3);",
+                          3, 0, parms.m_values, 0, 0, 0);
+    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
+                __FILE__, __LINE__, PQerrorMessage(s_postgres));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+    } else {
+        // the prepared statement returns a result, but the op always succeeds
+        // to some degree, so let's pretend everything is hunky-dory
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetSuccess);
+    }
+}
+
+void dm_auth_transferScorePoints(Auth_TransferScore* msg)
+{
+    PostgresStrings<4> parms;
+    parms.set(0, msg->m_srcScoreId);
+    parms.set(1, msg->m_dstScoreId);
+    PGresult* result = PQexecParams(s_postgres,
+                       "SELECT \"Type\" FROM auth.\"Scores\""
+                       "    WHERE idx=$1 OR idx=$2",
+                       2, 0, parms.m_values, 0, 0, 0);
+    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
+                __FILE__, __LINE__, PQerrorMessage(s_postgres));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    } else if (PQntuples(result) != 2) {
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetScoreNoDataFound);
+        return;
+    }
+    uint32_t srcType = strtoul(PQgetvalue(result, 0, 0), 0, 10);
+    uint32_t dstType = strtoul(PQgetvalue(result, 1, 0), 0, 10);
+    bool allowNegative = false;
+    PQclear(result);
+    if (srcType == Auth_UpdateScore::e_Fixed || dstType == Auth_UpdateScore::e_Fixed) {
+        SEND_REPLY(msg, DS::e_NetScoreWrongType);
+        return;
+    }
+    if (srcType == Auth_UpdateScore::e_Golf && dstType == Auth_UpdateScore::e_Golf) {
+        allowNegative = true;
+    }
+    parms.set(2, msg->m_points);
+    parms.set(3, static_cast<uint32_t>(allowNegative));
+    result = PQexecParams(s_postgres,
+             "SELECT auth.transfer_score_points($1, $2, $3, $4)",
+             4, 0, parms.m_values, 0, 0, 0);
+    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
+                __FILE__, __LINE__, PQerrorMessage(s_postgres));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    }
+    uint32_t status = strtoul(PQgetvalue(result, 0, 0), 0, 10);
+    PQclear(result);
+    SEND_REPLY(msg, (status != 0) ? DS::e_NetSuccess : DS::e_NetScoreNotEnoughPoints);
 }
 
 void dm_authDaemon()
@@ -801,7 +866,7 @@ void dm_authDaemon()
     }
 
     if (!dm_vault_init()) {
-        fprintf(stderr, "[Auth] Vault failed to initialize\n");
+        fputs("[Auth] Vault failed to initialize\n", stderr);
         return;
     }
 
@@ -819,19 +884,6 @@ void dm_authDaemon()
         // This doesn't block continuing...
         DS_DASSERT(false);
     }
-
-    // Mark all public ages as having a current population of ZERO
-    result = PQexec(s_postgres,
-                              "UPDATE game.\"PublicAges\" SET"
-                              "    \"CurrentPopulation\" = 0");
-    if (PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "%s:%d:\n    Postgres UPDATE error: %s\n",
-                __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        // This doesn't block continuing...
-        PQclear(result);
-        DS_DASSERT(false);
-    } else
-        PQclear(result);
 
     for ( ;; ) {
         DS::FifoMessage msg = s_authChannel.getMessage();
@@ -983,6 +1035,18 @@ void dm_authDaemon()
                 break;
             case e_AuthSetPublic:
                 dm_auth_set_pub_priv(reinterpret_cast<Auth_SetPublic*>(msg.m_payload));
+                break;
+            case e_AuthCreateScore:
+                dm_auth_createScore(reinterpret_cast<Auth_CreateScore*>(msg.m_payload));
+                break;
+            case e_AuthGetScores:
+                dm_auth_getScores(reinterpret_cast<Auth_GetScores*>(msg.m_payload));
+                break;
+            case e_AuthAddScorePoints:
+                dm_auth_addScorePoints(reinterpret_cast<Auth_UpdateScore*>(msg.m_payload));
+                break;
+            case e_AuthTransferScorePoints:
+                dm_auth_transferScorePoints(reinterpret_cast<Auth_TransferScore*>(msg.m_payload));
                 break;
             default:
                 /* Invalid message...  This shouldn't happen */

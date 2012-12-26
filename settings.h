@@ -29,6 +29,10 @@
 #define CLIENT_BRANCH_ID  (1)
 #define CLIENT_PRODUCT_ID "8cc6cc7c-611e-4cf7-b600-f49e283b5aed"
 
+#define HOOD_USER_NAME "GoW"
+#define HOOD_INSTANCE_NAME "Neighborhood"
+#define HOOD_POPULATION_THRESHOLD (20)
+
 #define CHUNK_SIZE (0x8000)
 
 namespace DS
