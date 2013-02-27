@@ -15,34 +15,47 @@
  * along with dirtsand.  If not, see <http://www.gnu.org/licenses/>.          *
  ******************************************************************************/
 
-#ifndef _DS_AUTHSERVER_H
-#define _DS_AUTHSERVER_H
+#ifndef _MOUL_INPUTEVENTMSG_H
+#define _MOUL_INPUTEVENTMSG_H
 
-#include "NetIO/SockIO.h"
-#include <exception>
+#include "Message.h"
+#include "Types/Math.h"
+#include "strings.h"
 
-namespace DS
+namespace MOUL
 {
-    void AuthServer_Init(bool restrictLogins=false);
-    void AuthServer_Add(SocketHandle client);
-    bool AuthServer_RestrictLogins();
-    void AuthServer_Shutdown();
-
-    void AuthServer_DisplayClients();
-
-    void AuthServer_AddAcct(DS::String, DS::String);
-    uint32_t AuthServer_AcctFlags(const DS::String& acctName, uint32_t flags);
-    bool AuthServer_AddAllPlayersFolder(uint32_t playerId);
-
-    class DbException : public std::exception
+    class InputEventMsg : public Message
     {
-    public:
-        DbException() throw() { }
-        virtual ~DbException() throw() { }
+        FACTORY_CREATABLE(InputEventMsg)
 
-        virtual const char* what() const throw()
-        { return "[DbException] Postgres error"; }
+        int32_t m_event;
+
+        virtual void read(DS::Stream* stream);
+        virtual void write(DS::Stream* stream);
+
+        virtual bool makeSafeForNet() { return false; }
+
+    protected:
+        InputEventMsg(uint16_t type) : Message(type), m_event(0) { }
     };
-}
+
+    class ControlEventMsg : public InputEventMsg
+    {
+        FACTORY_CREATABLE(ControlEventMsg)
+
+        int32_t m_controlCode;
+        bool m_activated;
+        float m_controlPercent;
+        DS::Vector3 m_turnToPoint;
+        DS::String m_cmd;
+
+        virtual void read(DS::Stream* stream);
+        virtual void write(DS::Stream* stream);
+
+    protected:
+        ControlEventMsg(uint16_t type)
+            : InputEventMsg(type), m_controlCode(0), m_activated(false), m_controlPercent(0) { }
+    };
+};
 
 #endif

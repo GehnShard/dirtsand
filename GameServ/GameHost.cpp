@@ -100,12 +100,33 @@ void dm_game_shutdown(GameHost_Private* host)
     delete host;
 }
 
+void dm_broadcast(GameHost_Private* host, MOUL::NetMessage* msg, uint32_t sender)
+{
+    DM_WRITEMSG(host, msg);
+    DS::SendFlag mode = (msg->m_contentFlags & MOUL::NetMessage::e_NeedsReliableSend) ? DS::e_SendNoRetry : DS::e_SendSpam;
+
+    std::lock_guard<std::mutex> hostGuard(s_gameHostMutex);
+    for (auto host_it = s_gameHosts.begin(); host_it != s_gameHosts.end(); ++host_it) {
+        std::lock_guard<std::mutex> clientGuard(host_it->second->m_clientMutex);
+        for (auto client_it = host_it->second->m_clients.begin(); client_it != host_it->second->m_clients.end(); ++client_it) {
+            if (client_it->second->m_clientInfo.m_PlayerId == sender
+                && !(msg->m_contentFlags & MOUL::NetMessage::e_EchoBackToSender))
+                continue;
+
+            try {
+                DS::CryptSendBuffer(client_it->second->m_sock, client_it->second->m_crypt,
+                                    host->m_buffer.buffer(), host->m_buffer.size(), mode);
+            } catch (DS::SockHup&) { }
+        }
+    }
+}
+
 void dm_propagate(GameHost_Private* host, MOUL::NetMessage* msg, uint32_t sender)
 {
     DM_WRITEMSG(host, msg);
 
     std::lock_guard<std::mutex> clientGuard(host->m_clientMutex);
-    DS::SendFlag mode = (msg->m_contentFlags & MOUL::NetMessage::e_NeedsReliableSend) ? DS::e_SendNonblocking : DS::e_SendNonblockingRecoverable;
+    DS::SendFlag mode = (msg->m_contentFlags & MOUL::NetMessage::e_NeedsReliableSend) ? DS::e_SendNoRetry : DS::e_SendSpam;
     for (auto client_iter = host->m_clients.begin(); client_iter != host->m_clients.end(); ++client_iter) {
         if (client_iter->second->m_clientInfo.m_PlayerId == sender
             && !(msg->m_contentFlags & MOUL::NetMessage::e_EchoBackToSender))
@@ -125,11 +146,12 @@ void dm_propagate_to(GameHost_Private* host, MOUL::NetMessage* msg,
                      const std::vector<uint32_t>& receivers)
 {
     DM_WRITEMSG(host, msg);
+    DS::SendFlag mode = (msg->m_contentFlags & MOUL::NetMessage::e_NeedsReliableSend) ? DS::e_SendNoRetry : DS::e_SendSpam;
 
-    std::lock_guard<std::mutex> clientGuard(host->m_clientMutex);
-    DS::SendFlag mode = (msg->m_contentFlags & MOUL::NetMessage::e_NeedsReliableSend) ? DS::e_SendNonblocking : DS::e_SendNonblockingRecoverable;
     for (auto rcvr_iter = receivers.begin(); rcvr_iter != receivers.end(); ++rcvr_iter) {
+        std::lock_guard<std::mutex> hostGuard(s_gameHostMutex);
         for (hostmap_t::iterator recv_host = s_gameHosts.begin(); recv_host != s_gameHosts.end(); ++recv_host) {
+            std::lock_guard<std::mutex> clientGuard(recv_host->second->m_clientMutex);
             auto client = recv_host->second->m_clients.find(*rcvr_iter);
             if (client != recv_host->second->m_clients.end()) {
                 try {
@@ -254,6 +276,7 @@ void dm_game_join(GameHost_Private* host, Game_ClientMessage* msg)
     // This does a few things for us...
     //   1. We get proper age node subscriptions (vault downloaded after we reply to this req)
     //   2. We ensure that the player is logged in and is supposed to be coming here.
+    //   3. We learn if the client is an admin (can send naughty messages)
     AuthClient_Private fakeClient;
     Auth_UpdateAgeSrv authReq;
     authReq.m_client = &fakeClient;
@@ -262,6 +285,7 @@ void dm_game_join(GameHost_Private* host, Game_ClientMessage* msg)
     s_authChannel.putMessage(e_AuthUpdateAgeSrv, reinterpret_cast<void*>(&authReq));
 
     DS::FifoMessage authReply = fakeClient.m_channel.getMessage();
+    msg->m_client->m_isAdmin = authReq.m_isAdmin;
     if (authReply.m_messageType != DS::e_NetSuccess) {
         SEND_REPLY(msg, authReply.m_messageType);
         return;
@@ -686,7 +710,12 @@ void dm_game_message(GameHost_Private* host, Game_PropagateMessage* msg)
             {
                 MOUL::NetMsgGameMessage* gameMsg = netmsg->Cast<MOUL::NetMsgGameMessage>();
                 gameMsg->m_message->m_bcastFlags |= MOUL::Message::e_NetNonLocal;
-                if (gameMsg->m_message->makeSafeForNet())
+                if (msg->m_client->m_isAdmin) {
+                    if (gameMsg->m_contentFlags & MOUL::NetMessage::e_RouteToAllPlayers)
+                        dm_broadcast(host, netmsg, msg->m_client->m_clientInfo.m_PlayerId);
+                    else
+                        dm_propagate(host, netmsg, msg->m_client->m_clientInfo.m_PlayerId);
+                } else if (gameMsg->m_message->makeSafeForNet())
                     dm_propagate(host, netmsg, msg->m_client->m_clientInfo.m_PlayerId);
             }
             break;
@@ -695,7 +724,7 @@ void dm_game_message(GameHost_Private* host, Game_PropagateMessage* msg)
                 MOUL::NetMsgGameMessageDirected* directedMsg =
                         netmsg->Cast<MOUL::NetMsgGameMessageDirected>();
                 directedMsg->m_message->m_bcastFlags |= MOUL::Message::e_NetNonLocal;
-                if (directedMsg->m_message->makeSafeForNet())
+                if (msg->m_client->m_isAdmin || directedMsg->m_message->makeSafeForNet())
                     dm_propagate_to(host, netmsg, directedMsg->m_receivers);
             }
             break;

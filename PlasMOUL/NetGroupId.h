@@ -15,34 +15,35 @@
  * along with dirtsand.  If not, see <http://www.gnu.org/licenses/>.          *
  ******************************************************************************/
 
-#ifndef _DS_AUTHSERVER_H
-#define _DS_AUTHSERVER_H
+#ifndef _MOUL_NETGROUPID_H
+#define _MOUL_NETGROUPID_H
 
-#include "NetIO/SockIO.h"
-#include <exception>
+#include "Key.h"
 
-namespace DS
+namespace MOUL
 {
-    void AuthServer_Init(bool restrictLogins=false);
-    void AuthServer_Add(SocketHandle client);
-    bool AuthServer_RestrictLogins();
-    void AuthServer_Shutdown();
-
-    void AuthServer_DisplayClients();
-
-    void AuthServer_AddAcct(DS::String, DS::String);
-    uint32_t AuthServer_AcctFlags(const DS::String& acctName, uint32_t flags);
-    bool AuthServer_AddAllPlayersFolder(uint32_t playerId);
-
-    class DbException : public std::exception
+    struct NetGroupId
     {
-    public:
-        DbException() throw() { }
-        virtual ~DbException() throw() { }
+        enum
+        {
+            e_NetGroupConstant = (1<<0),
+            e_NetGroupLocal    = (1<<1),
+        };
 
-        virtual const char* what() const throw()
-        { return "[DbException] Postgres error"; }
+        Location m_location;
+        uint8_t m_flags;
+
+        NetGroupId() : m_location(Unknown.m_location), m_flags(Unknown.m_flags) { }
+
+        NetGroupId(const Location& location, uint8_t flags)
+            : m_location(location), m_flags(flags) { }
+
+        static NetGroupId Unknown;
+        static NetGroupId LocalPlayer;
+        static NetGroupId RemotePlayer;
+        static NetGroupId LocalPhysicals;
+        static NetGroupId RemotePhysicals;
     };
-}
+};
 
 #endif

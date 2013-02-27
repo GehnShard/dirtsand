@@ -15,34 +15,20 @@
  * along with dirtsand.  If not, see <http://www.gnu.org/licenses/>.          *
  ******************************************************************************/
 
-#ifndef _DS_AUTHSERVER_H
-#define _DS_AUTHSERVER_H
+#include "SetNetGroupIdMsg.h"
 
-#include "NetIO/SockIO.h"
-#include <exception>
-
-namespace DS
+void MOUL::SetNetGroupIdMsg::read(DS::Stream* stream)
 {
-    void AuthServer_Init(bool restrictLogins=false);
-    void AuthServer_Add(SocketHandle client);
-    bool AuthServer_RestrictLogins();
-    void AuthServer_Shutdown();
-
-    void AuthServer_DisplayClients();
-
-    void AuthServer_AddAcct(DS::String, DS::String);
-    uint32_t AuthServer_AcctFlags(const DS::String& acctName, uint32_t flags);
-    bool AuthServer_AddAllPlayersFolder(uint32_t playerId);
-
-    class DbException : public std::exception
-    {
-    public:
-        DbException() throw() { }
-        virtual ~DbException() throw() { }
-
-        virtual const char* what() const throw()
-        { return "[DbException] Postgres error"; }
-    };
+    MOUL::Message::read(stream);
+    m_group.m_location.read(stream);
+    m_group.m_flags = stream->read<uint8_t>();
 }
 
-#endif
+void MOUL::SetNetGroupIdMsg::write(DS::Stream* stream)
+{
+    MOUL::Message::write(stream);
+    m_group.m_location.write(stream);
+    stream->write<uint8_t>(m_group.m_flags);
+}
+
+

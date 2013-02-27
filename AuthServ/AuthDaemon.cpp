@@ -25,6 +25,8 @@
 std::thread s_authDaemonThread;
 DS::MsgChannel s_authChannel;
 PGconn* s_postgres;
+bool s_restrictLogins = false;
+extern uint32_t s_allPlayers;
 
 #define SEND_REPLY(msg, result) \
     msg->m_client->m_channel.putMessage(result)
@@ -155,12 +157,21 @@ void dm_auth_login(Auth_LoginInfo* info)
     }
 
     client->m_acctUuid = DS::Uuid(PQgetvalue(result, 0, 1));
-    info->m_acctFlags = strtoul(PQgetvalue(result, 0, 2), 0, 10);
+    client->m_acctFlags = strtoul(PQgetvalue(result, 0, 2), 0, 10);
     info->m_billingType = strtoul(PQgetvalue(result, 0, 3), 0, 10);
     printf("[Auth] %s logged in as %s {%s}\n",
            DS::SockIpAddress(info->m_client->m_sock).c_str(),
            info->m_acctName.c_str(), client->m_acctUuid.toString().c_str());
     PQclear(result);
+
+    // Avoid fetching the players for banned dudes
+    if (client->m_acctFlags & DS::e_AcctBanned) {
+        SEND_REPLY(info, DS::e_NetAccountBanned);
+        return;
+    } else if (s_restrictLogins && !(client->m_acctFlags & (DS::e_AcctAdmin | DS::e_AcctBetaTester))) {
+        SEND_REPLY(info, DS::e_NetLoginDenied);
+        return;
+    }
 
     // Get list of players
     DS::String uuidString = client->m_acctUuid.toString();
@@ -203,7 +214,7 @@ void dm_auth_bcast_node(uint32_t nodeIdx, const DS::Uuid& revision)
         if (!(v_has_node(client->m_ageNodeId, nodeIdx) || v_has_node(client->m_player.m_playerId, nodeIdx)))
             continue;
         try {
-            DS::CryptSendBuffer(client->m_sock, client->m_crypt, buffer, 22, DS::e_SendNonblocking);
+            DS::CryptSendBuffer(client->m_sock, client->m_crypt, buffer, 22, DS::e_SendImmediately);
         } catch (DS::SockHup&) {
             // Client ignored us.  Return the favor
         }
@@ -225,7 +236,7 @@ void dm_auth_bcast_ref(const DS::Vault::NodeRef& ref)
         if (!(v_has_node(client->m_ageNodeId, ref.m_parent) || v_has_node(client->m_player.m_playerId, ref.m_parent)))
             continue;
         try {
-            DS::CryptSendBuffer(client->m_sock, client->m_crypt, buffer, 14, DS::e_SendNonblocking);
+            DS::CryptSendBuffer(client->m_sock, client->m_crypt, buffer, 14, DS::e_SendImmediately);
         } catch (DS::SockHup&) {
             // Client ignored us.  Return the favor
         }
@@ -246,7 +257,7 @@ void dm_auth_bcast_unref(const DS::Vault::NodeRef& ref)
         if (!(v_has_node(client->m_ageNodeId, ref.m_parent) || v_has_node(client->m_player.m_playerId, ref.m_parent)))
             continue;
         try {
-            DS::CryptSendBuffer(client->m_sock, client->m_crypt, buffer, 10, DS::e_SendNonblocking);
+            DS::CryptSendBuffer(client->m_sock, client->m_crypt, buffer, 10, DS::e_SendImmediately);
         } catch (DS::SockHup&) {
             // Client ignored us.  Return the favor
         }
@@ -417,8 +428,12 @@ void dm_auth_createPlayer(Auth_PlayerCreate* msg)
         SEND_REPLY(msg, DS::e_NetInternalError);
 
     // Tell neighborhood about its new member
-    v_ref_node(std::get<2>(player), std::get<1>(player), std::get<0>(player));
-    dm_auth_bcast_ref({std::get<2>(player), std::get<1>(player), std::get<0>(player), 0});
+    if (v_ref_node(std::get<2>(player), std::get<1>(player), std::get<0>(player)))
+        dm_auth_bcast_ref({std::get<2>(player), std::get<1>(player), std::get<0>(player), 0});
+
+    // Add new player to AllPlayers
+    if (v_ref_node(s_allPlayers, std::get<1>(player), 0))
+        dm_auth_bcast_ref({s_allPlayers, std::get<1>(player), 0, 0});
 
     PostgresStrings<5> iparms;
     iparms.set(0, client->m_acctUuid.toString());
@@ -875,9 +890,90 @@ void dm_auth_updateAgeSrv(Auth_UpdateAgeSrv* msg)
     }
     s_authClientMutex.unlock();
 
-    if (client)
+    if (client) {
         client->m_ageNodeId = msg->m_ageNodeId;
+        msg->m_isAdmin = (client->m_acctFlags & DS::e_AcctAdmin);
+    }
     SEND_REPLY(msg, client ? DS::e_NetSuccess : DS::e_NetPlayerNotFound);
+}
+
+void dm_auth_acctFlags(Auth_AccountFlags* msg)
+{
+    PostgresStrings<2> parms;
+    parms.set(0, msg->m_acctName);
+    PGresult* result = PQexecParams(s_postgres,
+                                    "SELECT \"AcctFlags\" FROM auth.\"Accounts\""
+                                    "    WHERE LOWER(\"Login\")=LOWER($1)",
+                                    1, 0, parms.m_values, 0, 0, 0);
+    if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
+                __FILE__, __LINE__, PQerrorMessage(s_postgres));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    }
+    if (PQntuples(result) != 1) {
+        fprintf(stderr, "%s:%d:\n    Expected 1 row, got %d\n",
+                __FILE__, __LINE__, PQntuples(result));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    }
+
+    uint32_t acctFlags = strtoul(PQgetvalue(result, 0, 0), 0, 10);
+    PQclear(result);
+
+    /* Thar be moar majick */
+#define TOGGLE_FLAG(flag) \
+    if (msg->m_flags & flag) { \
+        if (acctFlags & flag) \
+            acctFlags &= ~flag; \
+        else \
+            acctFlags |= flag; \
+    }
+    TOGGLE_FLAG(DS::e_AcctAdmin);
+    TOGGLE_FLAG(DS::e_AcctBanned);
+    TOGGLE_FLAG(DS::e_AcctBetaTester);
+#undef TOGGLE_FLAG
+
+    if (msg->m_flags != 0) {
+        parms.set(1, acctFlags);
+        result = PQexecParams(s_postgres,
+                              "UPDATE auth.\"Accounts\" SET \"AcctFlags\"=$2"
+                              "    WHERE LOWER(\"Login\")=LOWER($1)",
+                              2, 0, parms.m_values, 0, 0, 0);
+        if (PQresultStatus(result) != PGRES_COMMAND_OK) {
+            fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
+                    __FILE__, __LINE__, PQerrorMessage(s_postgres));
+            PQclear(result);
+            SEND_REPLY(msg, DS::e_NetInternalError);
+            return;
+        }
+        PQclear(result);
+    }
+    msg->m_flags = acctFlags;
+    SEND_REPLY(msg, DS::e_NetSuccess);
+}
+
+void dm_auth_addAllPlayers(Auth_AddAllPlayers* msg)
+{
+    check_postgres();
+
+    if (v_has_node(msg->m_playerId, s_allPlayers)) {
+        if (!v_unref_node(msg->m_playerId, s_allPlayers)) {
+            SEND_REPLY(msg, DS::e_NetInternalError);
+            return;
+        }
+        dm_auth_bcast_unref({msg->m_playerId, s_allPlayers, 0, 0});
+    } else {
+        if (!v_ref_node(msg->m_playerId, s_allPlayers, 0)) {
+            SEND_REPLY(msg, DS::e_NetInternalError);
+            return;
+        }
+        dm_auth_bcast_ref({msg->m_playerId, s_allPlayers, 0, 0});
+    }
+
+    SEND_REPLY(msg, DS::e_NetSuccess);
 }
 
 void dm_authDaemon()
@@ -896,6 +992,10 @@ void dm_authDaemon()
 
     if (!dm_vault_init()) {
         fputs("[Auth] Vault failed to initialize\n", stderr);
+        return;
+    }
+    if (!dm_all_players_init()) {
+        fputs("[Auth] AllPlayers folder failed to initialize\n", stderr);
         return;
     }
 
@@ -1079,6 +1179,20 @@ void dm_authDaemon()
                 break;
             case e_AuthUpdateAgeSrv:
                 dm_auth_updateAgeSrv(reinterpret_cast<Auth_UpdateAgeSrv*>(msg.m_payload));
+                break;
+            case e_AuthAcctFlags:
+                dm_auth_acctFlags(reinterpret_cast<Auth_AccountFlags*>(msg.m_payload));
+                break;
+            case e_AuthRestrictLogins:
+                s_restrictLogins = !s_restrictLogins;
+                if (msg.m_payload) {
+                    Auth_RestrictLogins* info = reinterpret_cast<Auth_RestrictLogins*>(msg.m_payload);
+                    info->m_status = s_restrictLogins;
+                    SEND_REPLY(info, DS::e_NetSuccess);
+                }
+                break;
+            case e_AuthAddAllPlayers:
+                dm_auth_addAllPlayers(reinterpret_cast<Auth_AddAllPlayers*>(msg.m_payload));
                 break;
             default:
                 /* Invalid message...  This shouldn't happen */

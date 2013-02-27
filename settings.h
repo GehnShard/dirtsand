@@ -24,15 +24,6 @@
 #define CRYPT_BASE_GAME (73)
 #define CRYPT_BASE_GATE (4)
 
-#define CLIENT_BUILD_ID   (14)
-#define CLIENT_BUILD_TYPE (50)
-#define CLIENT_BRANCH_ID  (1)
-#define CLIENT_PRODUCT_ID "8cc6cc7c-611e-4cf7-b600-f49e283b5aed"
-
-#define HOOD_USER_NAME "GoW"
-#define HOOD_INSTANCE_NAME "Neighborhood"
-#define HOOD_POPULATION_THRESHOLD (20)
-
 #define CHUNK_SIZE (0x8000)
 
 namespace DS
@@ -45,6 +36,18 @@ namespace DS
 
     namespace Settings
     {
+        // Product ID values
+        uint32_t BranchId();
+        uint32_t BuildId();
+        uint32_t BuildType();
+        const char* ProductUuid();
+
+        // Neighborhood Defaults
+        const char* HoodUserName();
+        const char* HoodInstanceName();
+        uint32_t HoodPopThreshold();
+
+        // Encryption keys
         const uint8_t* CryptKey(KeyType key);
         const uint32_t* DroidKey();
 
@@ -56,6 +59,7 @@ namespace DS
         const char* LobbyAddress();
         const char* LobbyPort();
 
+        bool StatusEnabled();
         const char* StatusAddress();
         const char* StatusPort();
 

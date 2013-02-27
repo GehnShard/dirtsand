@@ -15,34 +15,36 @@
  * along with dirtsand.  If not, see <http://www.gnu.org/licenses/>.          *
  ******************************************************************************/
 
-#ifndef _DS_AUTHSERVER_H
-#define _DS_AUTHSERVER_H
+#include "InputEventMsg.h"
 
-#include "NetIO/SockIO.h"
-#include <exception>
-
-namespace DS
+void MOUL::InputEventMsg::read(DS::Stream* stream)
 {
-    void AuthServer_Init(bool restrictLogins=false);
-    void AuthServer_Add(SocketHandle client);
-    bool AuthServer_RestrictLogins();
-    void AuthServer_Shutdown();
-
-    void AuthServer_DisplayClients();
-
-    void AuthServer_AddAcct(DS::String, DS::String);
-    uint32_t AuthServer_AcctFlags(const DS::String& acctName, uint32_t flags);
-    bool AuthServer_AddAllPlayersFolder(uint32_t playerId);
-
-    class DbException : public std::exception
-    {
-    public:
-        DbException() throw() { }
-        virtual ~DbException() throw() { }
-
-        virtual const char* what() const throw()
-        { return "[DbException] Postgres error"; }
-    };
+    MOUL::Message::read(stream);
+    m_event = stream->read<int32_t>();
 }
 
-#endif
+void MOUL::InputEventMsg::write(DS::Stream* stream)
+{
+    MOUL::Message::write(stream);
+    stream->write<int32_t>(m_event);
+}
+
+void MOUL::ControlEventMsg::read(DS::Stream* stream)
+{
+    MOUL::InputEventMsg::read(stream);
+    m_controlCode = stream->read<int32_t>();
+    m_activated = static_cast<bool>(stream->read<uint32_t>());
+    m_controlPercent = stream->read<float>();
+    m_turnToPoint = stream->read<DS::Vector3>();
+    m_cmd = stream->readPString<uint16_t>();
+}
+
+void MOUL::ControlEventMsg::write(DS::Stream* stream)
+{
+    MOUL::InputEventMsg::write(stream);
+    stream->write<int32_t>(m_controlCode);
+    stream->write<uint32_t>(static_cast<uint32_t>(m_activated));
+    stream->write<float>(m_controlPercent);
+    stream->write<DS::Vector3>(m_turnToPoint);
+    stream->writePString<uint16_t>(m_cmd);
+}

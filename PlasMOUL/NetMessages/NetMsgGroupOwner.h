@@ -19,34 +19,11 @@
 #define _MOUL_NETMSGGROUPOWNER_H
 
 #include "NetMessage.h"
-#include "Key.h"
+#include "NetGroupId.h"
 
 struct stat;
 namespace MOUL
 {
-    struct NetGroupId
-    {
-        enum
-        {
-            e_NetGroupConstant = (1<<0),
-            e_NetGroupLocal    = (1<<1),
-        };
-
-        Location m_location;
-        uint8_t m_flags;
-
-        NetGroupId() : m_location(Unknown.m_location), m_flags(Unknown.m_flags) { }
-
-        NetGroupId(const Location& location, uint8_t flags)
-            : m_location(location), m_flags(flags) { }
-
-        static NetGroupId Unknown;
-        static NetGroupId LocalPlayer;
-        static NetGroupId RemotePlayer;
-        static NetGroupId LocalPhysicals;
-        static NetGroupId RemotePhysicals;
-    };
-
     class NetMsgGroupOwner : public NetMsgServerToClient
     {
         FACTORY_CREATABLE(NetMsgGroupOwner)

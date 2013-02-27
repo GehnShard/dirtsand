@@ -106,7 +106,7 @@ void cb_register(AuthServer_Private& client)
 
     // Build ID
     uint32_t buildId = DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt);
-    if (buildId && buildId != CLIENT_BUILD_ID) {
+    if (buildId && buildId != DS::Settings::BuildId()) {
         fprintf(stderr, "[Auth] Wrong Build ID from %s: %d\n",
                 DS::SockIpAddress(client.m_sock).c_str(), buildId);
         DS::CloseSock(client.m_sock);
@@ -168,7 +168,7 @@ void cb_login(AuthServer_Private& client)
     client.m_buffer.write<uint32_t>(transId);
     client.m_buffer.write<uint32_t>(DS::e_NetSuccess);
     client.m_buffer.writeBytes(client.m_acctUuid.m_bytes, sizeof(client.m_acctUuid.m_bytes));
-    client.m_buffer.write<uint32_t>(msg.m_acctFlags);
+    client.m_buffer.write<uint32_t>(client.m_acctFlags);
     client.m_buffer.write<uint32_t>(msg.m_billingType);
     client.m_buffer.writeBytes(DS::Settings::DroidKey(), 4 * sizeof(uint32_t));
     SEND_REPLY();
@@ -989,9 +989,11 @@ void wk_authWorker(DS::SocketHandle sockp)
     DS::FreeSock(client.m_sock);
 }
 
-void DS::AuthServer_Init()
+void DS::AuthServer_Init(bool restrictLogins)
 {
     s_authDaemonThread = std::thread(&dm_authDaemon);
+    if (restrictLogins)
+        s_authChannel.putMessage(e_AuthRestrictLogins);
 }
 
 void DS::AuthServer_Add(DS::SocketHandle client)
@@ -1003,6 +1005,16 @@ void DS::AuthServer_Add(DS::SocketHandle client)
 
     std::thread threadh(&wk_authWorker, client);
     threadh.detach();
+}
+
+bool DS::AuthServer_RestrictLogins()
+{
+    AuthClient_Private client;
+    Auth_RestrictLogins msg;
+    msg.m_client = &client;
+    s_authChannel.putMessage(e_AuthRestrictLogins, &msg);
+    client.m_channel.getMessage();
+    return msg.m_status;
 }
 
 void DS::AuthServer_Shutdown()
@@ -1028,4 +1040,29 @@ void DS::AuthServer_AddAcct(DS::String acctName, DS::String password)
     info->m_acctName = acctName;
     info->m_password = password;
     s_authChannel.putMessage(e_AuthAddAcct, info);
+}
+
+uint32_t DS::AuthServer_AcctFlags(const DS::String& acctName, uint32_t flags)
+{
+    AuthClient_Private client;
+    Auth_AccountFlags req;
+    req.m_client = &client;
+    req.m_acctName = acctName;
+    req.m_flags = flags;
+    s_authChannel.putMessage(e_AuthAcctFlags, &req);
+    DS::FifoMessage reply = client.m_channel.getMessage();
+    if (reply.m_messageType == DS::e_NetSuccess)
+        return req.m_flags;
+    else
+        return static_cast<uint32_t>(-1);
+}
+
+bool DS::AuthServer_AddAllPlayersFolder(uint32_t playerId)
+{
+    AuthClient_Private client;
+    Auth_AddAllPlayers msg;
+    msg.m_client = &client;
+    msg.m_playerId = playerId;
+    s_authChannel.putMessage(e_AuthAddAllPlayers, &msg);
+    return (client.m_channel.getMessage().m_messageType == DS::e_NetSuccess);
 }
