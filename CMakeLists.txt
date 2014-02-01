@@ -25,6 +25,10 @@ if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
     set(WARN_FLAGS "-Wall -Wextra -Wno-unused-parameter")
     set(CMAKE_C_FLAGS "-pthread ${WARN_FLAGS} ${CMAKE_C_FLAGS}")
     set(CMAKE_CXX_FLAGS "-std=c++0x -pthread ${WARN_FLAGS} ${CMAKE_CXX_FLAGS}")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(WARN_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-format-invalid-specifier")
+    set(CMAKE_C_FLAGS "-pthread ${WARN_FLAGS} ${CMAKE_C_FLAGS}")
+    set(CMAKE_CXX_FLAGS "-std=c++11 -pthread ${WARN_FLAGS} ${CMAKE_CXX_FLAGS}")
 endif()
 set(CMAKE_C_FLAGS_DEBUG "-DDEBUG ${CMAKE_C_FLAGS_DEBUG}")
 set(CMAKE_CXX_FLAGS_DEBUG "-DDEBUG ${CMAKE_CXX_FLAGS_DEBUG}")
@@ -60,6 +64,7 @@ add_definitions(-DHOOD_POP_THRESHOLD=${DS_HOOD_POP_THRESHOLD})
 set(PlasMOUL_SOURCES
     PlasMOUL/AgeLinkStruct.cpp
     PlasMOUL/Key.cpp
+    PlasMOUL/GenericValue.cpp
     PlasMOUL/Avatar/AnimStage.cpp
     PlasMOUL/Avatar/ArmatureBrain.cpp
     PlasMOUL/Avatar/AvBrainCoop.cpp
@@ -89,6 +94,11 @@ set(PlasMOUL_SOURCES
     PlasMOUL/Messages/MultistageMsg.cpp
     PlasMOUL/Messages/SetNetGroupIdMsg.cpp
     PlasMOUL/Messages/InputEventMsg.cpp
+    PlasMOUL/Messages/WarpMsg.cpp
+    PlasMOUL/Messages/CreatableList.cpp
+    PlasMOUL/Messages/LinkingMgrMsg.cpp
+    PlasMOUL/Messages/ClimbMsg.cpp
+    PlasMOUL/Messages/BackdoorMsg.cpp
     PlasMOUL/NetMessages/NetMessage.cpp
     PlasMOUL/NetMessages/NetMsgObject.cpp
     PlasMOUL/NetMessages/NetMsgGameMessage.cpp
@@ -116,6 +126,7 @@ set(dirtsand_SOURCES
     Types/Uuid.cpp
     Types/ShaHash.cpp
     Types/BitVector.cpp
+    Types/Math.cpp
     NetIO/MsgChannel.cpp
     NetIO/SockIO.cpp
     NetIO/CryptIO.cpp
