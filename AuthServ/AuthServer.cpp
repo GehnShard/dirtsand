@@ -22,6 +22,8 @@
 #include "errors.h"
 #include <openssl/rand.h>
 
+#define NODE_SIZE_MAX (4 * 1024 * 1024)
+
 extern bool s_commdebug;
 
 std::list<AuthServer_Private*> s_authClients;
@@ -88,13 +90,12 @@ void cb_ping(AuthServer_Private& client)
     client.m_buffer.write<uint32_t>(DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt));
 
     // Payload
-    uint32_t payloadSize = DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt);
+    uint32_t payloadSize = DS::CryptRecvSize(client.m_sock, client.m_crypt);
     client.m_buffer.write<uint32_t>(payloadSize);
     if (payloadSize) {
-        uint8_t* payload = new uint8_t[payloadSize];
-        DS::CryptRecvBuffer(client.m_sock, client.m_crypt, payload, payloadSize);
-        client.m_buffer.writeBytes(payload, payloadSize);
-        delete[] payload;
+        std::unique_ptr<uint8_t[]> payload(new uint8_t[payloadSize]);
+        DS::CryptRecvBuffer(client.m_sock, client.m_crypt, payload.get(), payloadSize);
+        client.m_buffer.writeBytes(payload.get(), payloadSize);
     }
 
     SEND_REPLY();
@@ -238,11 +239,6 @@ void cb_playerDelete(AuthServer_Private& client)
 
     DS::FifoMessage reply = client.m_channel.getMessage();
     client.m_buffer.write<uint32_t>(reply.m_messageType);
-    if (reply.m_messageType != DS::e_NetSuccess) {
-        client.m_buffer.write<uint32_t>(0);   // Player ID
-    } else {
-        client.m_buffer.write<uint32_t>(msg.m_playerId);
-    }
 
     SEND_REPLY();
 }
@@ -288,10 +284,10 @@ void cb_nodeCreate(AuthServer_Private& client)
     // Trans ID
     client.m_buffer.write<uint32_t>(DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt));
 
-    uint32_t nodeSize = DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt);
-    uint8_t* nodeBuffer = new uint8_t[nodeSize];
-    DS::CryptRecvBuffer(client.m_sock, client.m_crypt, nodeBuffer, nodeSize);
-    DS::Blob nodeData = DS::Blob::Steal(nodeBuffer, nodeSize);
+    uint32_t nodeSize = DS::CryptRecvSize(client.m_sock, client.m_crypt, NODE_SIZE_MAX);
+    std::unique_ptr<uint8_t[]> nodeBuffer(new uint8_t[nodeSize]);
+    DS::CryptRecvBuffer(client.m_sock, client.m_crypt, nodeBuffer.get(), nodeSize);
+    DS::Blob nodeData = DS::Blob::Steal(nodeBuffer.release(), nodeSize);
     DS::BlobStream nodeStream(nodeData);
 
     Auth_NodeInfo msg;
@@ -351,15 +347,16 @@ void cb_nodeUpdate(AuthServer_Private& client)
     DS::CryptRecvBuffer(client.m_sock, client.m_crypt, &msg.m_revision.m_bytes,
                         sizeof(msg.m_revision.m_bytes));
 
-    uint32_t nodeSize = DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt);
-    uint8_t* nodeBuffer = new uint8_t[nodeSize];
-    DS::CryptRecvBuffer(client.m_sock, client.m_crypt, nodeBuffer, nodeSize);
-    DS::Blob nodeData = DS::Blob::Steal(nodeBuffer, nodeSize);
+    uint32_t nodeSize = DS::CryptRecvSize(client.m_sock, client.m_crypt, NODE_SIZE_MAX);
+    std::unique_ptr<uint8_t[]> nodeBuffer(new uint8_t[nodeSize]);
+    DS::CryptRecvBuffer(client.m_sock, client.m_crypt, nodeBuffer.get(), nodeSize);
+    DS::Blob nodeData = DS::Blob::Steal(nodeBuffer.release(), nodeSize);
     DS::BlobStream nodeStream(nodeData);
 
     msg.m_node.read(&nodeStream);
     DS_PASSERT(nodeStream.atEof());
     msg.m_node.m_NodeIdx = m_nodeId;
+    msg.m_internal = false;
     s_authChannel.putMessage(e_VaultUpdateNode, reinterpret_cast<void*>(&msg));
 
     DS::FifoMessage reply = client.m_channel.getMessage();
@@ -446,10 +443,10 @@ void cb_nodeFind(AuthServer_Private& client)
     Auth_NodeFindList msg;
     msg.m_client = &client;
 
-    uint32_t nodeSize = DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt);
-    uint8_t* nodeBuffer = new uint8_t[nodeSize];
-    DS::CryptRecvBuffer(client.m_sock, client.m_crypt, nodeBuffer, nodeSize);
-    DS::Blob nodeData = DS::Blob::Steal(nodeBuffer, nodeSize);
+    uint32_t nodeSize = DS::CryptRecvSize(client.m_sock, client.m_crypt, NODE_SIZE_MAX);
+    std::unique_ptr<uint8_t[]> nodeBuffer(new uint8_t[nodeSize]);
+    DS::CryptRecvBuffer(client.m_sock, client.m_crypt, nodeBuffer.get(), nodeSize);
+    DS::Blob nodeData = DS::Blob::Steal(nodeBuffer.release(), nodeSize);
     DS::BlobStream nodeStream(nodeData);
 
     msg.m_template.read(&nodeStream);
@@ -588,7 +585,7 @@ void cb_downloadStart(AuthServer_Private& client)
     DS::FileStream* stream = new DS::FileStream();
     try {
         stream->open(filename.c_str(), "rb");
-    } catch (DS::FileIOException ex) {
+    } catch (const DS::FileIOException& ex) {
         fprintf(stderr, "[Auth] Could not open file %s: %s\n[Auth] Requested by %s\n",
                 filename.c_str(), ex.what(), DS::SockIpAddress(client.m_sock).c_str());
         client.m_buffer.write<uint32_t>(DS::e_NetFileNotFound);
@@ -786,25 +783,25 @@ void cb_getPublicAges(AuthServer_Private& client)
 
             buf = msg.m_agename.toUtf16();
             copylen = buf.length() < 64 ? buf.length() : 63;
-            memcpy(strbuffer, buf.data(), copylen*sizeof(char16_t));
+            memcpy(strbuffer, buf.data(), copylen * sizeof(char16_t));
             strbuffer[copylen] = 0;
             client.m_buffer.writeBytes(strbuffer, 64 * sizeof(char16_t));
 
             buf = msg.m_ages[i].m_instancename.toUtf16();
             copylen = buf.length() < 64 ? buf.length() : 63;
-            memcpy(strbuffer, buf.data(), copylen*sizeof(char16_t));
+            memcpy(strbuffer, buf.data(), copylen * sizeof(char16_t));
             strbuffer[copylen] = 0;
             client.m_buffer.writeBytes(strbuffer, 64 * sizeof(char16_t));
 
             buf = msg.m_ages[i].m_username.toUtf16();
             copylen = buf.length() < 64 ? buf.length() : 63;
-            memcpy(strbuffer, buf.data(), copylen*sizeof(char16_t));
+            memcpy(strbuffer, buf.data(), copylen * sizeof(char16_t));
             strbuffer[copylen] = 0;
             client.m_buffer.writeBytes(strbuffer, 64 * sizeof(char16_t));
 
             buf = msg.m_ages[i].m_description.toUtf16();
             copylen = buf.length() < 1024 ? buf.length() : 1023;
-            memcpy(strbuffer, buf.data(), copylen*sizeof(char16_t));
+            memcpy(strbuffer, buf.data(), copylen * sizeof(char16_t));
             strbuffer[copylen] = 0;
             client.m_buffer.writeBytes(strbuffer, 1024 * sizeof(char16_t));
 
@@ -958,10 +955,13 @@ void wk_authWorker(DS::SocketHandle sockp)
                 throw DS::SockHup();
             }
         }
-    } catch (DS::AssertException ex) {
+    } catch (const DS::AssertException& ex) {
         fprintf(stderr, "[Auth] Assertion failed at %s:%ld:  %s\n",
                 ex.m_file, ex.m_line, ex.m_cond);
-    } catch (DS::SockHup) {
+    } catch (const DS::PacketSizeOutOfBounds& ex) {
+        fprintf(stderr, "[Auth] Client packet size too large: Requested %u bytes\n",
+                ex.requestedSize());
+    } catch (const DS::SockHup&) {
         // Socket closed...
     }
 
@@ -1023,12 +1023,16 @@ void DS::AuthServer_DisplayClients()
     }
 }
 
-void DS::AuthServer_AddAcct(DS::String acctName, DS::String password)
+bool DS::AuthServer_AddAcct(const DS::String& acctName, const DS::String& password)
 {
-    Auth_AccountInfo* info = new Auth_AccountInfo;
-    info->m_acctName = acctName;
-    info->m_password = password;
-    s_authChannel.putMessage(e_AuthAddAcct, info);
+    AuthClient_Private client;
+    Auth_AddAcct req;
+    req.m_client = &client;
+    req.m_acctInfo.m_acctName = acctName;
+    req.m_acctInfo.m_password = password;
+    s_authChannel.putMessage(e_AuthAddAcct, &req);
+    DS::FifoMessage reply = client.m_channel.getMessage();
+    return reply.m_messageType == DS::e_NetSuccess;
 }
 
 uint32_t DS::AuthServer_AcctFlags(const DS::String& acctName, uint32_t flags)
@@ -1053,5 +1057,17 @@ bool DS::AuthServer_AddAllPlayersFolder(uint32_t playerId)
     msg.m_client = &client;
     msg.m_playerId = playerId;
     s_authChannel.putMessage(e_AuthAddAllPlayers, &msg);
+    return (client.m_channel.getMessage().m_messageType == DS::e_NetSuccess);
+}
+
+bool DS::AuthServer_ChangeGlobalSDL(const DS::String& ageName, const DS::String& var, const DS::String& value)
+{
+    AuthClient_Private client;
+    Auth_UpdateGlobalSDL msg;
+    msg.m_client = &client;
+    msg.m_ageFilename = ageName;
+    msg.m_variable = var;
+    msg.m_value = value;
+    s_authChannel.putMessage(e_AuthUpdateGlobalSDL, &msg);
     return (client.m_channel.getMessage().m_messageType == DS::e_NetSuccess);
 }

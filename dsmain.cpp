@@ -59,8 +59,8 @@ static char** console_completer(const char* text, int start, int end)
 {
     static const char* completions[] = {
         /* Commands */
-        "addacct", "addallplayers", "clients", "commdebug", "help", "keygen", "modacct",
-        "quit", "restart", "restrict", "welcome",
+        "addacct", "addallplayers", "clients", "commdebug", "globalsdl", "help", "keygen",
+        "modacct", "quit", "restart", "restrict", "welcome",
         /* Services */
         "auth", "lobby", "status",
     };
@@ -95,16 +95,23 @@ static void print_trace(const char* text)
     free(stack_strings);
 }
 
-static void sigh_segv(int)
+static void sigh_crash(int signum)
 {
-    print_trace("Segfault");
-    abort();
+    const char *name =
+        (signum == SIGSEGV) ? "Segfault" :
+        (signum == SIGABRT) ? "Abort" :
+        (signum == SIGFPE)  ? "Divide by Zero" :
+        (signum == SIGBUS)  ? "Bus Error" :
+        "Unknown";
+
+    print_trace(name);
+    exit(4);
 }
 
 static void exception_filter()
 {
     print_trace("Unhandled exception");
-    abort();
+    exit(4);
 }
 
 static void sigh_term(int)
@@ -143,8 +150,11 @@ int main(int argc, char* argv[])
 
     // Show a stackdump in case we crash
     std::set_terminate(&exception_filter);
-    signal(SIGSEGV, &sigh_segv);
     signal(SIGTERM, &sigh_term);
+    signal(SIGSEGV, &sigh_crash);
+    signal(SIGABRT, &sigh_crash);
+    signal(SIGBUS, &sigh_crash);
+    signal(SIGFPE, &sigh_crash);
 
     // Ignore sigpipe and force send() to return EPIPE
     signal(SIGPIPE, SIG_IGN);
@@ -274,7 +284,8 @@ int main(int argc, char* argv[])
                 fputs("Usage: addacct <user> <password>\n", stdout);
                 continue;
             }
-            DS::AuthServer_AddAcct(args[1], args[2]);
+            if (!DS::AuthServer_AddAcct(args[1], args[2]))
+                fputs("Account was not added.\n", stderr);
         } else if (args[0] == "modacct") {
             if (args.size() < 2) {
                 fputs("Usage: modacct <user> [flag]\n", stdout);
@@ -322,12 +333,23 @@ int main(int argc, char* argv[])
             }
             if (!DS::AuthServer_AddAllPlayersFolder(args[1].toUint()))
                 fprintf(stderr, "Couldn't add the AllPlayers folder to %d", args[1].toUint());
+        } else if (args[0] == "globalsdl") {
+            if (args.size() < 3) {
+                fputs("Usage: globalsdl <ageName> <variable> <value>\n", stdout);
+                continue;
+            }
+            DS::String value;
+            if (args.size() > 3)
+                value = args[3];
+            if (!DS::AuthServer_ChangeGlobalSDL(args[1], args[2], value))
+                fprintf(stderr, "Error: Failed to change variable '%s'\n", args[2].c_str());
         } else if (args[0] == "help") {
             fputs("DirtSand v1.0 Console supported commands:\n"
                   "    addacct <user> <password>\n"
                   "    addallplayers <playerId>\n"
                   "    clients\n"
                   "    commdebug <on|off>\n"
+                  "    globalsdl <ageName> <variable> <value>\n"
                   "    help\n"
                   "    keygen <new|show>\n"
                   "    modacct <user> [flag]\n"

@@ -65,20 +65,16 @@ namespace DS
         return value;
     }
 
-    inline DS::String CryptRecvString(const SocketHandle sock, CryptState crypt)
+    inline uint32_t CryptRecvSize(const SocketHandle sock, CryptState crypt,
+                                  uint32_t maxSize = MAX_PAYLOAD_SIZE)
     {
-        uint16_t length = CryptRecvValue<uint16_t>(sock, crypt);
-        char16_t* buffer = new char16_t[length];
-        try {
-            CryptRecvBuffer(sock, crypt, buffer, length * sizeof(char16_t));
-        } catch (...) {
-            delete[] buffer;
-            throw;
-        }
-        String result = String::FromUtf16(buffer, length);
-        delete[] buffer;
-        return result;
+        uint32_t size = CryptRecvValue<uint32_t>(sock, crypt);
+        if (size > maxSize)
+            throw PacketSizeOutOfBounds(size);
+        return size;
     }
+
+    DS::String CryptRecvString(const SocketHandle sock, CryptState crypt);
 
     ShaHash BuggyHashPassword(const String& username, const String& password);
     ShaHash BuggyHashLogin(const ShaHash& passwordHash, uint32_t serverChallenge,

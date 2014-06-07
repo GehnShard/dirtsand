@@ -20,6 +20,7 @@
 #include "encodings.h"
 #include "settings.h"
 #include "errors.h"
+#include <SDL/DescriptorDb.h>
 #include <chrono>
 
 std::thread s_authDaemonThread;
@@ -27,6 +28,7 @@ DS::MsgChannel s_authChannel;
 PGconn* s_postgres;
 bool s_restrictLogins = false;
 extern uint32_t s_allPlayers;
+std::unordered_map<DS::String, SDL::State, DS::StringHash> s_globalStates;
 
 #define SEND_REPLY(msg, result) \
     msg->m_client->m_channel.putMessage(result)
@@ -38,29 +40,55 @@ static inline void check_postgres()
     DS_DASSERT(PQstatus(s_postgres) == CONNECTION_OK);
 }
 
-void dm_auth_addacct(Auth_AccountInfo* info)
+void dm_auth_addacct(Auth_AddAcct* msg)
 {
-    DS::StringBuffer<char> pwBuf = info->m_password.toUtf8();
-    DS::ShaHash pwHash = DS::ShaHash::Sha1(pwBuf.data(), pwBuf.length());
-    PostgresStrings<3> iparms;
-    iparms.set(0, gen_uuid().toString());
-    iparms.set(1, pwHash.toString());
-    iparms.set(2, info->m_acctName);
+    check_postgres();
+
+    PostgresStrings<3> qparms;
+    qparms.set(0, msg->m_acctInfo.m_acctName);
     PGresult* result = PQexecParams(s_postgres,
-            "INSERT INTO auth.\"Accounts\""
-            "    (\"AcctUuid\", \"PassHash\", \"Login\", \"AcctFlags\", \"BillingType\")"
-            "    VALUES ($1, $2, $3, 0, 1)"
-            "    RETURNING idx",
-            3, 0, iparms.m_values, 0, 0, 0);
-    delete info;
+            "SELECT idx, \"AcctUuid\" FROM auth.\"Accounts\""
+            "    WHERE LOWER(\"Login\")=LOWER($1)",
+            1, 0, qparms.m_values, 0, 0, 0);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
+        fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
         PQclear(result);
+        SEND_REPLY(msg, DS::e_NetInternalError);
         return;
     }
-    DS_DASSERT(PQntuples(result) == 1);
-    PQclear(result);
+
+    if (PQntuples(result) == 0) {
+        PQclear(result);
+
+        DS::StringBuffer<char> pwBuf = msg->m_acctInfo.m_password.toUtf8();
+        DS::ShaHash pwHash = DS::ShaHash::Sha1(pwBuf.data(), pwBuf.length());
+        PostgresStrings<3> iparms;
+        iparms.set(0, gen_uuid().toString());
+        iparms.set(1, pwHash.toString());
+        iparms.set(2, msg->m_acctInfo.m_acctName);
+        PGresult* result = PQexecParams(s_postgres,
+                "INSERT INTO auth.\"Accounts\""
+                "    (\"AcctUuid\", \"PassHash\", \"Login\", \"AcctFlags\", \"BillingType\")"
+                "    VALUES ($1, $2, $3, 0, 1)"
+                "    returning idx",
+                3, 0, iparms.m_values, 0, 0, 0);
+        if (PQresultStatus(result) != PGRES_TUPLES_OK) {
+            fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
+                    __FILE__, __LINE__, PQerrorMessage(s_postgres));
+            PQclear(result);
+            SEND_REPLY(msg, DS::e_NetInternalError);
+            return;
+        }
+        DS_DASSERT(PQntuples(result) == 1);
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetSuccess);
+    } else {
+        fprintf(stderr, "Error: Account already exists (ID %s; UUID %s)\n",
+                PQgetvalue(result, 0, 0), PQgetvalue(result, 0, 1));
+        PQclear(result);
+        SEND_REPLY(msg, DS::e_NetAccountAlreadyExists);
+    }
 }
 
 void dm_auth_shutdown()
@@ -84,6 +112,7 @@ void dm_auth_shutdown()
         fputs("[Auth] Clients didn't die after 5 seconds!\n", stderr);
 
     PQfinish(s_postgres);
+    s_globalStates.clear();
 }
 
 void dm_auth_login(Auth_LoginInfo* info)
@@ -976,6 +1005,89 @@ void dm_auth_addAllPlayers(Auth_AddAllPlayers* msg)
     SEND_REPLY(msg, DS::e_NetSuccess);
 }
 
+void dm_auth_fetchSDL(Auth_FetchSDL* msg)
+{
+    auto global_it = s_globalStates.find(msg->m_ageFilename);
+    if (global_it != s_globalStates.end()) {
+        msg->m_globalState = global_it->second;
+    }
+
+    if (msg->m_sdlNodeId == 0) {
+        // TODO: Determine if there actually is a non-null state and save to vault
+        msg->m_localState = gen_default_sdl(msg->m_ageFilename);
+    } else {
+        DS::Vault::Node sdlNode = v_fetch_node(msg->m_sdlNodeId);
+        msg->m_localState = sdlNode.m_Blob_1;
+    }
+
+    SEND_REPLY(msg, DS::e_NetSuccess);
+}
+
+void dm_auth_update_globalSDL(Auth_UpdateGlobalSDL* msg)
+{
+    auto it = s_globalStates.find(msg->m_ageFilename);
+    if (it == s_globalStates.end()) {
+        SEND_REPLY(msg, DS::e_NetStateObjectNotFound);
+        return;
+    }
+
+    SDL::State state = it->second;
+    for (size_t i = 0; i < state.data()->m_simpleVars.size(); ++i) {
+        SDL::Variable* var = state.data()->m_simpleVars[i];
+        if (var->descriptor()->m_name == msg->m_variable) {
+            var->data()->m_flags |= SDL::Variable::e_HasTimeStamp | SDL::Variable::e_XIsDirty;
+            var->data()->m_timestamp.setNow();
+
+            if (msg->m_value.isEmpty()) {
+                var->setDefault();
+            } else {
+                var->data()->m_flags &= ~SDL::Variable::e_SameAsDefault;
+                switch (var->descriptor()->m_type) {
+                case SDL::e_VarBool:
+                    var->data()->m_bool[0] = msg->m_value.toBool();
+                    break;
+                case SDL::e_VarByte:
+                    var->data()->m_byte[0] = static_cast<int8_t>(msg->m_value.toUint());
+                    break;
+                case SDL::e_VarInt:
+                    var->data()->m_int[0] = msg->m_value.toInt();
+                    break;
+                case SDL::e_VarShort:
+                    var->data()->m_short[0] = static_cast<int16_t>(msg->m_value.toInt());
+                    break;
+                default:
+                    // Global SDL is only plain old ints...
+                    SEND_REPLY(msg, DS::e_NetNotSupported);
+                    return;
+                }
+            }
+
+            // I guess this is a good time to save it back to the DB?
+            DS::Blob blob = state.toBlob();
+            PostgresStrings<2> parms;
+            parms.set(0, msg->m_ageFilename);
+            parms.set(1, DS::Base64Encode(blob.buffer(), blob.size()));
+            PGresult* result = PQexecParams(s_postgres, "UPDATE vault.\"GlobalStates\""
+                                            "    SET \"SdlBlob\" = $2"
+                                            "    WHERE \"Descriptor\" = $1",
+                                            2, 0, parms.m_values, 0, 0, 0);
+            if (PQresultStatus(result) != PGRES_COMMAND_OK) {
+                fprintf(stderr, "%s:%d:\n    Postgres UPDATE error: %s\n",
+                        __FILE__, __LINE__, PQerrorMessage(s_postgres));
+                // This doesn't block continuing...
+                DS_DASSERT(false);
+            }
+
+            DS::GameServer_UpdateGlobalSDL(msg->m_ageFilename);
+            SEND_REPLY(msg, DS::e_NetSuccess);
+            return;
+        }
+    }
+
+    // If we got here, then we didn't find a variable...
+    SEND_REPLY(msg, DS::e_NetInvalidParameter);
+}
+
 void dm_authDaemon()
 {
     s_postgres = PQconnectdb(DS::String::Format(
@@ -992,6 +1104,10 @@ void dm_authDaemon()
 
     if (!dm_vault_init()) {
         fputs("[Auth] Vault failed to initialize\n", stderr);
+        return;
+    }
+    if (!dm_global_sdl_init()) {
+        fputs("[Auth] AllAgeGlobalSDL failed to initialize\n", stderr);
         return;
     }
     if (!dm_check_static_ages()) {
@@ -1062,7 +1178,7 @@ void dm_authDaemon()
             case e_VaultUpdateNode:
                 {
                     Auth_NodeInfo* info = reinterpret_cast<Auth_NodeInfo*>(msg.m_payload);
-                    if (!info->m_revision.isNull() && info->m_node.m_NodeType == DS::Vault::e_NodeSDL) {
+                    if (!info->m_internal && info->m_node.m_NodeType == DS::Vault::e_NodeSDL) {
                         // This is an SDL update. It needs to be passed off to the gameserver
                         PostgresStrings<1> parms;
                         parms.set(0, info->m_node.m_NodeIdx);
@@ -1161,7 +1277,7 @@ void dm_authDaemon()
                 dm_auth_disconnect(reinterpret_cast<Auth_ClientMessage*>(msg.m_payload));
                 break;
             case e_AuthAddAcct:
-                dm_auth_addacct(reinterpret_cast<Auth_AccountInfo*>(msg.m_payload));
+                dm_auth_addacct(reinterpret_cast<Auth_AddAcct*>(msg.m_payload));
                 break;
             case e_AuthGetPublic:
                 dm_auth_get_public(reinterpret_cast<Auth_PubAgeRequest*>(msg.m_payload));
@@ -1198,12 +1314,18 @@ void dm_authDaemon()
             case e_AuthAddAllPlayers:
                 dm_auth_addAllPlayers(reinterpret_cast<Auth_AddAllPlayers*>(msg.m_payload));
                 break;
+            case e_AuthFetchSDL:
+                dm_auth_fetchSDL(reinterpret_cast<Auth_FetchSDL*>(msg.m_payload));
+                break;
+            case e_AuthUpdateGlobalSDL:
+                dm_auth_update_globalSDL(reinterpret_cast<Auth_UpdateGlobalSDL*>(msg.m_payload));
+                break;
             default:
                 /* Invalid message...  This shouldn't happen */
                 DS_DASSERT(0);
                 break;
             }
-        } catch (DS::AssertException ex) {
+        } catch (const DS::AssertException& ex) {
             fprintf(stderr, "[Auth] Assertion failed at %s:%ld:  %s\n",
                     ex.m_file, ex.m_line, ex.m_cond);
             if (msg.m_payload) {
@@ -1211,6 +1333,9 @@ void dm_authDaemon()
                 SEND_REPLY(reinterpret_cast<Auth_ClientMessage*>(msg.m_payload),
                            DS::e_NetInternalError);
             }
+        } catch (const DS::PacketSizeOutOfBounds& ex) {
+            fprintf(stderr, "[Auth] Client packet size too large: Requested %u bytes\n",
+                    ex.requestedSize());
         }
     }
 
