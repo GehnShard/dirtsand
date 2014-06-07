@@ -23,7 +23,6 @@
 #include <cstring>
 #include <cstdarg>
 #include <unordered_map>
-#include <string>
 #ifdef HAVE_ATOMIC
   #include <atomic>
 #else
@@ -169,11 +168,45 @@ namespace DS
         StringBuffer<char> m_data;
     };
 
-    struct StringHash : public std::hash<std::string>
+    struct StringEqualI
     {
-        size_t operator()(const String& value) const
+        bool operator()(const DS::String& _L, const DS::String& _R) const
         {
-            return std::hash<std::string>::operator()(value.c_str());
+            return _L.compare(_R, e_CaseInsensitive) == 0;
+        }
+    };
+
+    struct StringHash
+    {
+        // TODO: This doesn't really use enough bits to be useful when
+        //       size_t is 64-bits.
+        size_t operator()(const DS::String& str) const
+        {
+            size_t hash = 0;
+            for (size_t i = 0; i < str.length(); ++i) {
+                hash += fetch_char(str, i);
+                hash += (hash << 10);
+                hash ^= (hash >> 6);
+            }
+            hash += (hash << 3);
+            hash ^= (hash >> 11);
+            hash += (hash << 15);
+            return hash;
+        }
+
+    protected:
+        virtual char fetch_char(const DS::String& str, size_t index) const
+        {
+            return str.c_str()[index];
+        }
+    };
+
+    struct StringHashI : public StringHash
+    {
+    protected:
+        virtual char fetch_char(const DS::String& str, size_t index) const
+        {
+            return tolower(str.c_str()[index]);
         }
     };
 }
