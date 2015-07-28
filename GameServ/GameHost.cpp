@@ -221,7 +221,6 @@ void dm_game_disconnect(GameHost_Private* host, Game_ClientMessage* msg)
 
     dm_propagate(host, memberMsg, msg->m_client->m_clientInfo.m_PlayerId);
     memberMsg->unref();
-    SEND_REPLY(msg, DS::e_NetSuccess);
 
     // Release any stale locks
     host->m_lockMutex.lock();
@@ -275,6 +274,8 @@ void dm_game_disconnect(GameHost_Private* host, Game_ClientMessage* msg)
     //       joining just as the last player is leaving.
     if (host->m_clients.size() == 0)
         host->m_channel.putMessage(e_GameShutdown, 0);
+
+    SEND_REPLY(msg, DS::e_NetSuccess);
 }
 
 void dm_game_join(GameHost_Private* host, Game_ClientMessage* msg)
@@ -452,6 +453,26 @@ void dm_save_sdl_state(GameHost_Private* host, const DS::String& descriptor,
     }
 }
 
+void dm_bcast_sdl_state(GameHost_Private* host, GameClient_Private* client,
+                        const MOUL::NetMsgSDLState* update, const SDL::State& state)
+{
+    MOUL::NetMsgSDLStateBCast* bcast = MOUL::NetMsgSDLStateBCast::Create();
+    bcast->m_contentFlags = MOUL::NetMessage::e_HasPlayerID
+                          | MOUL::NetMessage::e_HasTimeSent
+                          | MOUL::NetMessage::e_IsSystemMessage
+                          | MOUL::NetMessage::e_NeedsReliableSend;
+    bcast->m_timestamp.setNow();
+    bcast->m_isAvatar = update->m_isAvatar;
+    bcast->m_isInitial = update->m_isInitial;
+    bcast->m_object = update->m_object;
+    bcast->m_persistOnServer = update->m_persistOnServer;
+    bcast->m_playerId = client->m_clientInfo.m_PlayerId;
+    bcast->m_sdlBlob = state.toBlob();
+    bcast->m_timestamp.setNow();
+    dm_propagate(host, bcast, bcast->m_playerId);
+    bcast->unref();
+}
+
 void dm_read_sdl(GameHost_Private* host, GameClient_Private* client,
                  MOUL::NetMsgSDLState* state, bool bcast)
 {
@@ -483,6 +504,8 @@ void dm_read_sdl(GameHost_Private* host, GameClient_Private* client,
         host->m_localState.add(update);
         host->m_ageSdlHook.add(update);
         dm_local_sdl_update(host, host->m_localState.toBlob());
+        if (bcast)
+            dm_bcast_sdl_state(host, client, state, host->m_ageSdlHook);
     } else {
         auto fobj = host->m_states.find(state->m_object);
         if (fobj == host->m_states.end() || fobj->second.find(update.descriptor()->m_name) == fobj->second.end()) {
@@ -494,6 +517,8 @@ void dm_read_sdl(GameHost_Private* host, GameClient_Private* client,
 
             if (state->m_persistOnServer)
                 dm_save_sdl_state(host, update.descriptor()->m_name, state->m_object, update);
+            if (bcast)
+                dm_bcast_sdl_state(host, client, state, update);
         } else {
             GameState& gs = host->m_states[state->m_object][update.descriptor()->m_name];
             gs.m_isAvatar = state->m_isAvatar;
@@ -502,11 +527,10 @@ void dm_read_sdl(GameHost_Private* host, GameClient_Private* client,
 
             if (state->m_persistOnServer)
                 dm_save_sdl_state(host, update.descriptor()->m_name, state->m_object, gs.m_state);
+            if (bcast)
+                dm_bcast_sdl_state(host, client, state, gs.m_state);
         }
     }
-
-    if (bcast)
-        dm_propagate(host, state, client->m_clientInfo.m_PlayerId);
 }
 
 void dm_test_and_set(GameHost_Private* host, GameClient_Private* client,
