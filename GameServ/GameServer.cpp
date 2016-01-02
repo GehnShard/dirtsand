@@ -103,10 +103,7 @@ void cb_join(GameClient_Private& client)
 
     // Trans ID
     client.m_buffer.write<uint32_t>(DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt));
-
     uint32_t mcpId = DS::CryptRecvValue<uint32_t>(client.m_sock, client.m_crypt);
-    client.m_host = find_game_host(mcpId);
-    DS_PASSERT(client.m_host != 0);
 
     Game_ClientMessage msg;
     msg.m_client = &client;
@@ -133,6 +130,9 @@ void cb_join(GameClient_Private& client)
     }
     msg.m_client->m_clientInfo.set_PlayerName(nodeInfo.m_node.m_IString64_1);
     msg.m_client->m_clientInfo.set_CCRLevel(0);
+
+    client.m_host = find_game_host(mcpId);
+    DS_PASSERT(client.m_host != 0);
     client.m_host->m_channel.putMessage(e_GameJoinAge, reinterpret_cast<void*>(&msg));
 
     reply = client.m_channel.getMessage();
@@ -263,9 +263,12 @@ void wk_gameWorker(DS::SocketHandle sockp)
     }
 
     if (client.m_host) {
-        client.m_host->m_clientMutex.lock();
-        client.m_host->m_clients.erase(client.m_clientInfo.m_PlayerId);
-        client.m_host->m_clientMutex.unlock();
+        {
+            std::lock_guard<std::mutex> _guard(client.m_host->m_clientMutex);
+            auto it = client.m_host->m_clients.find(client.m_clientInfo.m_PlayerId);
+            if (it != client.m_host->m_clients.end())
+                client.m_host->m_clients.erase(it);
+        }
         Game_ClientMessage msg;
         msg.m_client = &client;
         client.m_host->m_channel.putMessage(e_GameDisconnect, reinterpret_cast<void*>(&msg));
