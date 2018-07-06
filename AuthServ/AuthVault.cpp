@@ -32,26 +32,17 @@ uint32_t s_allPlayers = 0;
 #define SEND_REPLY(msg, result) \
     msg->m_client->m_channel.putMessage(result)
 
-static inline void check_postgres()
-{
-    if (PQstatus(s_postgres) == CONNECTION_BAD)
-        PQreset(s_postgres);
-    DS_DASSERT(PQstatus(s_postgres) == CONNECTION_OK);
-}
-
 DS::Uuid gen_uuid()
 {
-    check_postgres();
-    PGresult* result = PQexec(s_postgres, "SELECT uuid_generate_v4()");
+    check_postgres(s_postgres);
+    DS::PGresultRef result = PQexec(s_postgres, "SELECT uuid_generate_v4()");
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return DS::Uuid();
     }
-    DS_DASSERT(PQntuples(result) == 1);
+    DS_ASSERT(PQntuples(result) == 1);
     DS::Uuid uuid(PQgetvalue(result, 0, 0));
-    PQclear(result);
     return uuid;
 }
 
@@ -71,17 +62,14 @@ DS::Blob gen_default_sdl(const ST::string& filename)
 static std::tuple<uint32_t, uint32_t>
 find_a_friendly_neighborhood_for_our_new_visitor()
 {
-    PostgresStrings<2> parms;
-    parms.set(0, DS::Settings::HoodUserName());
-    PGresult* result = PQexecParams(s_postgres,
-                       "SELECT idx FROM vault.\"Nodes\" WHERE \"String64_2\"="
-                       "    'Neighborhood' AND \"String64_4\" = $1"
-                       "    ORDER BY \"Int32_1\"",
-                       1, 0, parms.m_values, 0, 0, 0);
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
+            "SELECT idx FROM vault.\"Nodes\" WHERE \"String64_2\"="
+            "    'Neighborhood' AND \"String64_4\" = $1"
+            "    ORDER BY \"Int32_1\"",
+            DS::Settings::HoodUserName());
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return std::make_tuple<uint32_t, uint32_t>(0, 0);
     }
     uint32_t theHoodInfo = 0;
@@ -93,7 +81,6 @@ find_a_friendly_neighborhood_for_our_new_visitor()
             break;
         }
     }
-    PQclear(result);
 
     // Need new hood?
     if (theHoodInfo == 0) {
@@ -109,36 +96,29 @@ find_a_friendly_neighborhood_for_our_new_visitor()
     }
 
     // It's important to BCast new hood members, so we'll return the ageOwners folder
-    parms.set(0, theHoodInfo);
-    parms.set(1, DS::Vault::e_AgeOwnersFolder);
-    result = PQexecParams(s_postgres, "SELECT idx FROM vault.find_folder($1, $2);",
-                          2, 0, parms.m_values, 0, 0, 0);
+    result = DS::PQexecVA(s_postgres, "SELECT idx FROM vault.find_folder($1, $2);",
+                          theHoodInfo, DS::Vault::e_AgeOwnersFolder);
     if (PQresultStatus(result) == PGRES_TUPLES_OK) {
         uint32_t ownersFolder = strtoul(PQgetvalue(result, 0, 0), 0, 10);
-        PQclear(result);
         return std::make_tuple(theHoodInfo, ownersFolder);
     } else {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return std::make_tuple(0, 0);
     }
 }
 
 static uint32_t find_public_age_1(const ST::string& filename, const DS::Uuid& uuid=DS::Uuid())
 {
-    PostgresStrings<2> parms;
-    parms.set(0, filename);
-    PGresult* result;
+    DS::PGresultRef result;
     if (uuid.isNull()) {
-        result = PQexecParams(s_postgres, "SELECT idx FROM vault.\"Nodes\""
+        result = DS::PQexecVA(s_postgres, "SELECT idx FROM vault.\"Nodes\""
                               "    WHERE \"Int32_2\" = 1 AND \"String64_2\"=$1",
-                              1, 0, parms.m_values, 0, 0, 0);
+                              filename);
     } else {
-        parms.set(1, uuid.toString());
-        result = PQexecParams(s_postgres, "SELECT idx FROM vault.\"Nodes\""
+        result = DS::PQexecVA(s_postgres, "SELECT idx FROM vault.\"Nodes\""
                               "    WHERE \"Int32_2\" = 1 AND \"String64_2\"=$1 AND \"Uuid_1\"=$2",
-                              2, 0, parms.m_values, 0, 0, 0);
+                              filename, uuid.toString());
     }
     uint32_t ageInfoId = 0;
     if (PQresultStatus(result) == PGRES_TUPLES_OK) {
@@ -148,7 +128,6 @@ static uint32_t find_public_age_1(const ST::string& filename, const DS::Uuid& uu
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
     }
-    PQclear(result);
     return ageInfoId;
 }
 
@@ -164,7 +143,7 @@ std::list<AuthServer_AgeInfo> configure_static_ages()
         return configs;
     }
 
-    try {
+    {
         char buffer[4096];
         bool haveAge = false;
         while (fgets(buffer, 4096, cfgfile)) {
@@ -179,8 +158,13 @@ std::list<AuthServer_AgeInfo> configure_static_ages()
 
                 ST::string header = line.trim().replace("[","").replace("]","");
 
-                if (header != "auto")
-                    age.m_ageId = DS::Uuid(header.c_str());
+                if (header != "auto") {
+                    try {
+                        age.m_ageId = DS::Uuid(header.c_str());
+                    } catch (DS::MalformedData&) {
+                        // Error message already printed by constructor...
+                    }
+                }
 
                 haveAge = true;
                 continue;
@@ -210,11 +194,6 @@ std::list<AuthServer_AgeInfo> configure_static_ages()
 
         if (haveAge)
             configs.push_back(age);
-    } catch (DS::AssertException ex) {
-        fprintf(stderr, "[Auth] Assertion failed at %s:%ld:  %s\n",
-                ex.m_file, ex.m_line, ex.m_cond);
-        fclose(cfgfile);
-        return configs;
     }
 
     fclose(cfgfile);
@@ -223,23 +202,18 @@ std::list<AuthServer_AgeInfo> configure_static_ages()
 
 bool dm_vault_init()
 {
-    PostgresStrings<1> sparm;
-    sparm.set(0, DS::Vault::e_NodeSystem);
-    PGresult* result = PQexecParams(s_postgres,
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
             "SELECT \"idx\" FROM vault.\"Nodes\""
             "    WHERE \"NodeType\"=$1",
-            1, 0, sparm.m_values, 0, 0, 0);
+            DS::Vault::e_NodeSystem);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
 
     int count = PQntuples(result);
     if (count == 0) {
-        PQclear(result);
-
         fputs("[Vault] Initializing empty DirtSand vault\n", stderr);
 
         // Create system and global inbox nodes
@@ -258,9 +232,12 @@ bool dm_vault_init()
         if (!v_ref_node(s_systemNode, globalInbox, 0))
             return false;
     } else {
-        DS_DASSERT(count == 1);
+        if (count > 1) {
+            fprintf(stderr, "[Vault] WARNING: Found %d System nodes. "
+                            "The vault is almost certainly corrupt at this point.",
+                    count);
+        }
         s_systemNode = strtoul(PQgetvalue(result, 0, 0), 0, 10);
-        PQclear(result);
     }
 
     return true;
@@ -273,53 +250,47 @@ bool dm_global_sdl_init()
 
 bool dm_all_players_init()
 {
-    PostgresStrings<2> parms;
-    parms.set(0, DS::Vault::e_NodePlayerInfoList);
-    parms.set(1, DS::Vault::e_AllPlayersFolder);
-    PGresult* result = PQexecParams(s_postgres,
-                                    "SELECT idx FROM vault.\"Nodes\""
-                                    "    WHERE \"NodeType\"=$1 AND \"Int32_1\"=$2",
-                                    2, 0, parms.m_values, 0, 0, 0);
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
+            "SELECT idx FROM vault.\"Nodes\""
+            "    WHERE \"NodeType\"=$1 AND \"Int32_1\"=$2",
+            DS::Vault::e_NodePlayerInfoList, DS::Vault::e_AllPlayersFolder);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     } else if (PQntuples(result) > 0) {
-        DS_DASSERT(PQntuples(result) == 1);
+        if (PQntuples(result) != 1) {
+            fprintf(stderr, "[Vault] WARNING: Found %d AllPlayers folders\n",
+                    PQntuples(result));
+        }
         s_allPlayers = strtoul(PQgetvalue(result, 0, 0), 0, 10);
-        PQclear(result);
         return true;
     }
 
     // create that mutha
-    result = PQexecParams(s_postgres,
+    result = DS::PQexecVA(s_postgres,
                           "INSERT INTO vault.\"Nodes\" (\"NodeType\", \"Int32_1\")"
                           "    VALUES ($1, $2) RETURNING idx",
-                          2, 0, parms.m_values, 0, 0, 0);
+                          DS::Vault::e_NodePlayerInfoList,
+                          DS::Vault::e_AllPlayersFolder);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
     s_allPlayers = strtoul(PQgetvalue(result, 0, 0), 0, 10);
-    PQclear(result);
 
     // add the already existing players
-    parms.set(0, DS::Vault::e_NodePlayerInfo);
-    result = PQexecParams(s_postgres,
+    result = DS::PQexecVA(s_postgres,
                           "SELECT idx FROM vault.\"Nodes\" WHERE \"NodeType\"=$1",
-                          1, 0, parms.m_values, 0, 0, 0);
+                          DS::Vault::e_NodePlayerInfo);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
     for (int i = 0; i < PQntuples(result); ++i)
         v_ref_node(s_allPlayers, strtoul(PQgetvalue(result, i, 0), 0, 10), 0);
-    PQclear(result);
     return true;
 }
 
@@ -345,19 +316,17 @@ bool v_check_global_sdl(const ST::string& name, SDL::StateDescriptor* desc)
     DS::FileStream fs;
     try {
         fs.open(agefile.c_str(), "r");
-    } catch (DS::FileIOException&) {
+    } catch (const DS::FileIOException&) {
         return true;
     }
 
-    PostgresStrings<2> parms;
-    parms.set(0, name);
-    PGresult* result = PQexecParams(s_postgres, "SELECT idx,\"SdlBlob\" FROM vault.\"GlobalStates\""
-                                    "WHERE \"Descriptor\"=$1 LIMIT 1",
-                                    1, 0, parms.m_values, 0, 0, 0);
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
+            "SELECT idx,\"SdlBlob\" FROM vault.\"GlobalStates\""
+            "    WHERE \"Descriptor\"=$1 LIMIT 1",
+            name);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
 
@@ -365,40 +334,34 @@ bool v_check_global_sdl(const ST::string& name, SDL::StateDescriptor* desc)
         s_globalStates[name] = SDL::State(desc);
         DS::Blob blob = s_globalStates[name].toBlob();
 
-        parms.set(1, ST::base64_encode(blob.buffer(), blob.size()));
-        result = PQexecParams(s_postgres, "INSERT INTO vault.\"GlobalStates\""
-                              "    (\"Descriptor\", \"SdlBlob\") VALUES ($1, $2)",
-                              2, 0, parms.m_values, 0, 0, 0);
+        result = DS::PQexecVA(s_postgres,
+                "INSERT INTO vault.\"GlobalStates\""
+                "    (\"Descriptor\", \"SdlBlob\") VALUES ($1, $2)",
+                name, ST::base64_encode(blob.buffer(), blob.size()));
         if (PQresultStatus(result) != PGRES_COMMAND_OK) {
             fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
                     __FILE__, __LINE__, PQerrorMessage(s_postgres));
-            PQclear(result);
             return false;
         }
-        PQclear(result);
     } else {
         uint32_t idx = strtoul(PQgetvalue(result, 0, 0), 0, 10);
         DS::Blob blob = DS::Base64Decode(PQgetvalue(result, 0, 1));
         SDL::State state = SDL::State::FromBlob(blob);
-        PQclear(result);
 
         // Slightly redundant, but this will prevent us from doing needless work.
         if (state.descriptor() != desc) {
             state.update();
             blob = state.toBlob();
 
-            parms.set(0, idx);
-            parms.set(1, ST::base64_encode(blob.buffer(), blob.size()));
-            result = PQexecParams(s_postgres, "UPDATE vault.\"GlobalStates\""
-                                  "SET \"SdlBlob\"=$2 WHERE idx=$1",
-                                  2, 0, parms.m_values, 0, 0, 0);
+            result = DS::PQexecVA(s_postgres,
+                    "UPDATE vault.\"GlobalStates\""
+                    "    SET \"SdlBlob\"=$1 WHERE idx=$2",
+                    ST::base64_encode(blob.buffer(), blob.size()), idx);
             if (PQresultStatus(result) != PGRES_COMMAND_OK) {
                 fprintf(stderr, "%s:%d:\n    Postgres UPDATE error: %s\n",
                         __FILE__, __LINE__, PQerrorMessage(s_postgres));
                 // This doesn't block continuing...
-                DS_DASSERT(false);
             }
-            PQclear(result);
         }
         s_globalStates[name] = state;
     }
@@ -410,23 +373,25 @@ SDL::State v_find_global_sdl(const ST::string& ageName)
     SDL::StateDescriptor* desc = SDL::DescriptorDb::FindLatestDescriptor(ageName);
     if (!desc)
         return nullptr;
-    check_postgres();
+    check_postgres(s_postgres);
 
-    PostgresStrings<1> parms;
-    parms.set(0, ageName);
-    PGresult* result = PQexecParams(s_postgres, "SELECT \"SdlBlob\" FROM vault.\"GlobalStates\""
-                                    "WHERE \"Descriptor\"=$1 LIMIT 1",
-                                    1, 0, parms.m_values, 0, 0, 0);
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
+            "SELECT \"SdlBlob\" FROM vault.\"GlobalStates\""
+            "    WHERE \"Descriptor\"=$1 LIMIT 1",
+            ageName);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return nullptr;
     }
+    if (PQntuples(result) == 0) {
+        return nullptr;
+    } else if (PQntuples(result) != 1) {
+        fprintf(stderr, "[Auth] WARNING: Found multiple global SDL blobs for %s\n",
+                ageName.c_str());
+    }
 
-    DS_PASSERT(PQntuples(result) == 1);
     DS::Blob blob = DS::Base64Decode(PQgetvalue(result, 0, 0));
-    PQclear(result);
     return SDL::State::FromBlob(blob);
 }
 
@@ -437,18 +402,16 @@ v_create_age(AuthServer_AgeInfo age, uint32_t flags)
         age.m_ageId = gen_uuid();
     int seqNumber = age.m_seqNumber;
     if (seqNumber < 0) {
-        check_postgres();
+        check_postgres(s_postgres);
 
-        PGresult* result = PQexec(s_postgres, "SELECT nextval('game.\"AgeSeqNumber\"'::regclass)");
+        DS::PGresultRef result = PQexec(s_postgres, "SELECT nextval('game.\"AgeSeqNumber\"'::regclass)");
         if (PQresultStatus(result) != PGRES_TUPLES_OK) {
             fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                     __FILE__, __LINE__, PQerrorMessage(s_postgres));
-            PQclear(result);
             return std::make_pair(0, 0);
         }
-        DS_DASSERT(PQntuples(result) == 1);
+        DS_ASSERT(PQntuples(result) == 1);
         seqNumber = strtol(PQgetvalue(result, 0, 0), 0, 10);
-        PQclear(result);
     }
 
     DS::Vault::Node node;
@@ -587,24 +550,16 @@ v_create_age(AuthServer_AgeInfo age, uint32_t flags)
                            : !age.m_instName.is_empty() ? age.m_instName
                            : age.m_filename;
 
-        PostgresStrings<5> parms;
-        parms.set(0, age.m_ageId.toString());
-        parms.set(1, age.m_filename);
-        parms.set(2, agedesc);
-        parms.set(3, ageNode);
-        parms.set(4, ageSdlNode);
-        PGresult* result = PQexecParams(s_postgres,
+        DS::PGresultRef result = DS::PQexecVA(s_postgres,
                 "INSERT INTO game.\"Servers\""
                 "    (\"AgeUuid\", \"AgeFilename\", \"DisplayName\", \"AgeIdx\", \"SdlIdx\")"
                 "    VALUES ($1, $2, $3, $4, $5)",
-                5, 0, parms.m_values, 0, 0, 0);
+                age.m_ageId.toString(), age.m_filename, agedesc, ageNode, ageSdlNode);
         if (PQresultStatus(result) != PGRES_COMMAND_OK) {
             fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
                     __FILE__, __LINE__, PQerrorMessage(s_postgres));
-            PQclear(result);
             return std::make_pair(0, 0);
         }
-        PQclear(result);
     }
 
     return std::make_tuple(ageNode, ageInfoNode);
@@ -787,21 +742,23 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
         return std::make_tuple(0, 0, 0);
 
     {
-        PostgresStrings<2> parms;
-        parms.set(0, std::get<1>(reltoAge));
-        parms.set(1, DS::Vault::e_AgeOwnersFolder);
-        PGresult* result = PQexecParams(s_postgres,
+        DS::PGresultRef result = DS::PQexecVA(s_postgres,
                 "SELECT idx FROM vault.find_folder($1, $2);",
-                2, 0, parms.m_values, 0, 0, 0);
+                std::get<1>(reltoAge), DS::Vault::e_AgeOwnersFolder);
         if (PQresultStatus(result) != PGRES_TUPLES_OK) {
             fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                     __FILE__, __LINE__, PQerrorMessage(s_postgres));
-            PQclear(result);
             return std::make_tuple(0, 0, 0);
         }
-        DS_DASSERT(PQntuples(result) == 1);
+        if (PQntuples(result) == 0) {
+            fprintf(stderr, "Did not find AgeOwnersFolder for %u\n",
+                    std::get<1>(reltoAge));
+            return std::make_tuple(0, 0, 0);
+        } else if (PQntuples(result) != 1) {
+            fprintf(stderr, "WARNING: Multiple AgeOwnersFolders found for %u\n",
+                    std::get<1>(reltoAge));
+        }
         uint32_t ownerFolder = strtoul(PQgetvalue(result, 0, 0), 0, 10);
-        PQclear(result);
 
         if (!v_ref_node(ownerFolder, playerInfoNode, 0))
             return std::make_tuple(0, 0, 0);
@@ -871,7 +828,7 @@ uint32_t v_create_node(const DS::Vault::Node& node)
     /* This should be plenty to store everything we need without a bunch
      * of dynamic reallocations
      */
-    PostgresStrings<31> parms;
+    DS::PostgresStrings<31> parms;
     char fieldbuf[1024];
 
     size_t parmcount = 0;
@@ -882,7 +839,7 @@ uint32_t v_create_node(const DS::Vault::Node& node)
             parms.set(parmcount++, value); \
             fieldp += sprintf(fieldp, "\"" #name "\","); \
         }
-    int now = time(0);
+    int now = static_cast<int>(time(nullptr));
     SET_FIELD(CreateTime, now);
     SET_FIELD(ModifyTime, now);
     if (node.has_CreateAgeName())
@@ -945,35 +902,32 @@ uint32_t v_create_node(const DS::Vault::Node& node)
         SET_FIELD(Blob_2, ST::base64_encode(node.m_Blob_2.buffer(), node.m_Blob_2.size()));
     #undef SET_FIELD
 
-    DS_DASSERT(fieldp - fieldbuf < 1024);
+    DS_ASSERT(fieldp > fieldbuf && fieldp < fieldbuf + sizeof(fieldbuf));
     *(fieldp - 1) = ')';    // Get rid of the last comma
     ST::string_stream queryStr;
     queryStr << "INSERT INTO vault.\"Nodes\" (";
     queryStr << fieldbuf;
 
     fieldp = fieldbuf;
-    for (size_t i=0; i<parmcount; ++i) {
-        sprintf(fieldp, "$%zu,", i+1);
-        fieldp += strlen(fieldp);
-    }
-    DS_DASSERT(fieldp - fieldbuf < 1024);
+    for (size_t i=0; i<parmcount; ++i)
+        fieldp += sprintf(fieldp, "$%zu,", i+1);
+    DS_ASSERT(fieldp > fieldbuf && fieldp < fieldbuf + sizeof(fieldbuf));
     *(fieldp - 1) = ')';    // Get rid of the last comma
     queryStr << "\n    VALUES (";
     queryStr << fieldbuf;
     queryStr << "\n    RETURNING idx";
 
-    check_postgres();
-    PGresult* result = PQexecParams(s_postgres, queryStr.to_string().c_str(),
-                                    parmcount, 0, parms.m_values, 0, 0, 0);
+    check_postgres(s_postgres);
+    DS::PGresultRef result = PQexecParams(s_postgres, queryStr.to_string().c_str(),
+                                          parmcount, nullptr, parms.m_values,
+                                          nullptr, nullptr, 0);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return 0;
     }
-    DS_DASSERT(PQntuples(result) == 1);
+    DS_ASSERT(PQntuples(result) == 1);
     uint32_t idx = strtoul(PQgetvalue(result, 0, 0), 0, 10);
-    PQclear(result);
     return idx;
 }
 
@@ -984,23 +938,19 @@ bool v_has_node(uint32_t parentId, uint32_t childId)
     if (parentId == childId)
         return true;
 
-    PostgresStrings<2> parms;
-    parms.set(0, parentId);
-    parms.set(1, childId);
-
-    check_postgres();
-    PGresult* result = PQexecParams(s_postgres,
-                                    "SELECT vault.has_node($1, $2)",
-                                    2, 0, parms.m_values, 0, 0, 0);
+    check_postgres(s_postgres);
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
+            "SELECT vault.has_node($1, $2)",
+            parentId, childId);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
-    DS_DASSERT(PQntuples(result) == 1);
+    // If this assertion fails, it is a problem in the implementation of
+    // vault.has_node(), not in the vault data itself
+    DS_ASSERT(PQntuples(result) == 1);
     bool retval = (*PQgetvalue(result, 0, 0) == 't');
-    PQclear(result);
     return retval != 0;
 }
 
@@ -1009,7 +959,7 @@ bool v_update_node(const DS::Vault::Node& node)
     /* This should be plenty to store everything we need without a bunch
      * of dynamic reallocations
      */
-    PostgresStrings<32> parms;
+    DS::PostgresStrings<32> parms;
     char fieldbuf[1024];
 
     size_t parmcount = 1;
@@ -1020,7 +970,7 @@ bool v_update_node(const DS::Vault::Node& node)
             parms.set(parmcount++, value); \
             fieldp += sprintf(fieldp, "\"" #name "\"=$%zu,", parmcount); \
         }
-    int now = time(0);
+    int now = static_cast<int>(time(nullptr));
     SET_FIELD(ModifyTime, now);
     if (node.has_CreateAgeName())
         SET_FIELD(CreateAgeName, node.m_CreateAgeName);
@@ -1082,7 +1032,7 @@ bool v_update_node(const DS::Vault::Node& node)
         SET_FIELD(Blob_2, ST::base64_encode(node.m_Blob_2.buffer(), node.m_Blob_2.size()));
     #undef SET_FIELD
 
-    DS_DASSERT(fieldp - fieldbuf < 1024);
+    DS_ASSERT(fieldp > fieldbuf && fieldp < fieldbuf + sizeof(fieldbuf));
     *(fieldp - 1) = 0;  // Get rid of the last comma
     ST::string_stream queryStr;
     queryStr << "UPDATE vault.\"Nodes\"\n    SET ";
@@ -1090,24 +1040,21 @@ bool v_update_node(const DS::Vault::Node& node)
     queryStr << "\n    WHERE idx=$1";
     parms.set(0, node.m_NodeIdx);
 
-    check_postgres();
-    PGresult* result = PQexecParams(s_postgres, queryStr.to_string().c_str(),
-                                    parmcount, 0, parms.m_values, 0, 0, 0);
+    check_postgres(s_postgres);
+    DS::PGresultRef result = PQexecParams(s_postgres, queryStr.to_string().c_str(),
+                                          parmcount, nullptr, parms.m_values,
+                                          nullptr, nullptr, 0);
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres UPDATE error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
-    PQclear(result);
     return true;
 }
 
 DS::Vault::Node v_fetch_node(uint32_t nodeIdx)
 {
-    PostgresStrings<1> parm;
-    parm.set(0, nodeIdx);
-    PGresult* result = PQexecParams(s_postgres,
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
         "SELECT idx, \"CreateTime\", \"ModifyTime\", \"CreateAgeName\","
         "    \"CreateAgeUuid\", \"CreatorUuid\", \"CreatorIdx\", \"NodeType\","
         "    \"Int32_1\", \"Int32_2\", \"Int32_3\", \"Int32_4\","
@@ -1117,18 +1064,15 @@ DS::Vault::Node v_fetch_node(uint32_t nodeIdx)
         "    \"String64_5\", \"String64_6\", \"IString64_1\", \"IString64_2\","
         "    \"Text_1\", \"Text_2\", \"Blob_1\", \"Blob_2\""
         "    FROM vault.\"Nodes\" WHERE idx=$1",
-        1, 0, parm.m_values, 0, 0, 0);
+        nodeIdx);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return DS::Vault::Node();
     }
     if (PQntuples(result) == 0) {
-        PQclear(result);
         return DS::Vault::Node();
     }
-    DS_DASSERT(PQntuples(result) == 1);
 
     DS::Vault::Node node;
     node.set_NodeIdx(strtoul(PQgetvalue(result, 0, 0), 0, 10));
@@ -1192,62 +1136,47 @@ DS::Vault::Node v_fetch_node(uint32_t nodeIdx)
     if (!PQgetisnull(result, 0, 31))
         node.set_Blob_2(DS::Base64Decode(PQgetvalue(result, 0, 31)));
 
-    PQclear(result);
     return node;
 }
 
 bool v_ref_node(uint32_t parentIdx, uint32_t childIdx, uint32_t ownerIdx)
 {
-    PostgresStrings<3> parms;
-    parms.set(0, parentIdx);
-    parms.set(1, childIdx);
-    parms.set(2, ownerIdx);
-    PGresult* result = PQexecParams(s_postgres,
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
             "INSERT INTO vault.\"NodeRefs\""
             "    (\"ParentIdx\", \"ChildIdx\", \"OwnerIdx\")"
             "    VALUES ($1, $2, $3)",
-            3, 0, parms.m_values, 0, 0, 0);
+            parentIdx, childIdx, ownerIdx);
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres INSERT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
-    PQclear(result);
     return true;
 }
 
 bool v_unref_node(uint32_t parentIdx, uint32_t childIdx)
 {
-    PostgresStrings<2> parms;
-    parms.set(0, parentIdx);
-    parms.set(1, childIdx);
-    PGresult* result = PQexecParams(s_postgres,
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
             "DELETE FROM vault.\"NodeRefs\""
             "    WHERE \"ParentIdx\"=$1 AND \"ChildIdx\"=$2",
-            2, 0, parms.m_values, 0, 0, 0);
+            parentIdx, childIdx);
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres DELETE error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
-    PQclear(result);
     return true;
 }
 
 bool v_fetch_tree(uint32_t nodeId, std::vector<DS::Vault::NodeRef>& refs)
 {
-    PostgresStrings<1> parm;
-    parm.set(0, nodeId);
-    PGresult* result = PQexecParams(s_postgres,
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
             "SELECT \"ParentIdx\", \"ChildIdx\", \"OwnerIdx\", \"Seen\""
             "    FROM vault.fetch_tree($1);",
-            1, 0, parm.m_values, 0, 0, 0);
+            nodeId);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
 
@@ -1258,7 +1187,6 @@ bool v_fetch_tree(uint32_t nodeId, std::vector<DS::Vault::NodeRef>& refs)
         refs[i].m_owner = strtoul(PQgetvalue(result, i, 2), 0, 10);
         refs[i].m_seen = strtoul(PQgetvalue(result, i, 3), 0, 10);
     }
-    PQclear(result);
     return true;
 }
 
@@ -1270,7 +1198,7 @@ bool v_find_nodes(const DS::Vault::Node& nodeTemplate, std::vector<uint32_t>& no
     /* This should be plenty to store everything we need without a bunch
      * of dynamic reallocations
      */
-    PostgresStrings<31> parms;
+    DS::PostgresStrings<31> parms;
     char fieldbuf[1024];
 
     size_t parmcount = 0;
@@ -1351,27 +1279,27 @@ bool v_find_nodes(const DS::Vault::Node& nodeTemplate, std::vector<uint32_t>& no
     #undef SET_FIELD
     #undef SET_FIELD_I
 
-    DS_DASSERT(parmcount > 0);
-    DS_DASSERT(fieldp - fieldbuf < 1024);
+    if (parmcount == 0)
+        return false;
+    DS_ASSERT(fieldp >= fieldbuf + 5 && fieldp < fieldbuf + sizeof(fieldbuf));
     *(fieldp - 5) = 0;  // Get rid of the last ' AND '
     ST::string_stream queryStr;
     queryStr << "SELECT idx FROM vault.\"Nodes\"\n    WHERE ";
     queryStr << fieldbuf;
 
-    check_postgres();
-    PGresult* result = PQexecParams(s_postgres, queryStr.to_string().c_str(),
-                                    parmcount, 0, parms.m_values, 0, 0, 0);
+    check_postgres(s_postgres);
+    DS::PGresultRef result = PQexecParams(s_postgres, queryStr.to_string().c_str(),
+                                          parmcount, nullptr, parms.m_values,
+                                          nullptr, nullptr, 0);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
 
     nodes.resize(PQntuples(result));
     for (size_t i=0; i<nodes.size(); ++i)
         nodes[i] = strtoul(PQgetvalue(result, i, 0), 0, 10);
-    PQclear(result);
     return true;
 }
 
@@ -1379,21 +1307,19 @@ DS::Vault::NodeRef v_send_node(uint32_t nodeId, uint32_t playerId, uint32_t send
 {
     DS::Vault::NodeRef ref;
     ref.m_child = ref.m_owner = ref.m_parent = 0;
-    PostgresStrings<2> parms;
-    parms.set(0, playerId);
-    parms.set(1, DS::Vault::e_InboxFolder);
-    PGresult* result = PQexecParams(s_postgres,
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
             "SELECT idx FROM vault.find_folder($1, $2);",
-            2, 0, parms.m_values, 0, 0, 0);
+            playerId, DS::Vault::e_InboxFolder);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return ref;
     }
-    DS_DASSERT(PQntuples(result) == 1);
+    if (PQntuples(result) == 0) {
+        fprintf(stderr, "[Auth] Could not find Inbox folder for %u\n", playerId);
+        return ref;
+    }
     uint32_t inbox = strtoul(PQgetvalue(result, 0, 0), 0, 10);
-    PQclear(result);
 
     if (v_ref_node(inbox, nodeId, senderId)) {
         ref.m_child = nodeId;
@@ -1405,43 +1331,34 @@ DS::Vault::NodeRef v_send_node(uint32_t nodeId, uint32_t playerId, uint32_t send
 
 uint32_t v_count_age_owners(uint32_t ageInfoId)
 {
-    PostgresStrings<2> parms;
-    parms.set(0, ageInfoId);
-    parms.set(1, DS::Vault::e_AgeOwnersFolder);
-    PGresult* result = PQexecParams(s_postgres,
-                       "SELECT idx FROM vault.find_folder($1, $2);",
-                       2, 0, parms.m_values, 0, 0, 0);
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
+            "SELECT idx FROM vault.find_folder($1, $2);",
+            ageInfoId, DS::Vault::e_AgeOwnersFolder);
     uint32_t owners = 0;
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return owners;
     }
-    parms.set(0, PQgetvalue(result, 0, 0));
-    PQclear(result);
-    result = PQexecParams(s_postgres,
-             "SELECT COUNT(*) FROM vault.\"NodeRefs\" WHERE \"ParentIdx\"=$1",
-              1, 0, parms.m_values, 0, 0, 0);
+    const ST::string parentIdx = PQgetvalue(result, 0, 0);
+    result = DS::PQexecVA(s_postgres,
+            "SELECT COUNT(*) FROM vault.\"NodeRefs\" WHERE \"ParentIdx\"=$1",
+            parentIdx);
     if (PQresultStatus(result) == PGRES_TUPLES_OK) {
         owners = strtoul(PQgetvalue(result, 0, 0), 0, 10);
     } else {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
     }
-    PQclear(result);
     return owners;
 }
 
 uint32_t v_count_age_population(const char* uuid)
 {
-    PostgresStrings<2> parms;
-    parms.set(0, DS::Vault::e_NodePlayerInfo);
-    parms.set(1, uuid);
-    PGresult* result = PQexecParams(s_postgres,
-                       "SELECT COUNT(*) FROM vault.\"Nodes\" WHERE \"NodeType\"=$1 AND"
-                       "    \"Int32_1\"=1 AND \"Uuid_1\"=$2",
-                       2, 0, parms.m_values, 0, 0, 0);
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
+            "SELECT COUNT(*) FROM vault.\"Nodes\" WHERE \"NodeType\"=$1 AND"
+            "    \"Int32_1\"=1 AND \"Uuid_1\"=$2",
+            DS::Vault::e_NodePlayerInfo, uuid);
     uint32_t population = 0;
     if (PQresultStatus(result) == PGRES_TUPLES_OK) {
         population = strtoul(PQgetvalue(result, 0, 0), 0, 10);
@@ -1449,26 +1366,21 @@ uint32_t v_count_age_population(const char* uuid)
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
     }
-    PQclear(result);
     return population;
 }
 
 bool v_find_public_ages(const ST::string& ageFilename, std::vector<Auth_PubAgeRequest::NetAgeInfo>& ages)
 {
-    PostgresStrings<2> parms;
-    parms.set(0, DS::Vault::e_NodeAgeInfo);
-    parms.set(1, ageFilename);
     // ageInfoId, Uuid, InstName, UserName, Description, SeqNumber, Language
-    PGresult* result = PQexecParams(s_postgres,
-                       "SELECT idx, \"Uuid_1\", \"String64_3\", \"String64_4\","
-                       "    \"Text_1\",\"Int32_1\", \"Int32_3\" FROM vault.\"Nodes\""
-                       "    WHERE \"NodeType\"=$1 AND \"Int32_2\"=1 AND \"String64_2\"=$2"
-                       "    ORDER BY \"ModifyTime\" DESC LIMIT 50",
-                       2, 0, parms.m_values, 0, 0, 0);
+    DS::PGresultRef result = DS::PQexecVA(s_postgres,
+            "SELECT idx, \"Uuid_1\", \"String64_3\", \"String64_4\","
+            "    \"Text_1\",\"Int32_1\", \"Int32_3\" FROM vault.\"Nodes\""
+            "    WHERE \"NodeType\"=$1 AND \"Int32_2\"=1 AND \"String64_2\"=$2"
+            "    ORDER BY \"ModifyTime\" DESC LIMIT 50",
+            DS::Vault::e_NodeAgeInfo, ageFilename);
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
         fprintf(stderr, "%s:%d:\n    Postgres SELECT error: %s\n",
                 __FILE__, __LINE__, PQerrorMessage(s_postgres));
-        PQclear(result);
         return false;
     }
     for (int i = 0; i < PQntuples(result); ++i) {
@@ -1483,6 +1395,5 @@ bool v_find_public_ages(const ST::string& ageFilename, std::vector<Auth_PubAgeRe
         ai.m_population = v_count_age_owners(strtoul(PQgetvalue(result, i, 0), 0 , 10));
         ages.push_back(ai);
     }
-    PQclear(result);
     return true;
 }
