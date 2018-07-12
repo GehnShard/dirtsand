@@ -967,7 +967,7 @@ void SDL::State::add(const SDL::State& state)
 
 void SDL::State::merge(const SDL::State& state)
 {
-    if (!m_data)
+    if (!m_data || !state.m_data)
         return;
 
     if (state.m_data->m_desc != m_data->m_desc) {
