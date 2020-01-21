@@ -25,8 +25,6 @@
 #include <chrono>
 #include <functional>
 
-extern bool s_commdebug;
-
 #define START_REPLY(msgId) \
     client.m_buffer.truncate(); \
     client.m_buffer.write<uint16_t>(msgId)
@@ -241,8 +239,8 @@ void wk_gameWorker(DS::SocketHandle sockp)
 {
     GameClient_Private client;
     client.m_sock = sockp;
-    client.m_host = 0;
-    client.m_crypt = 0;
+    client.m_host = nullptr;
+    client.m_crypt = nullptr;
     client.m_isLoaded = false;
 
     try {
@@ -326,7 +324,7 @@ Game_AgeInfo age_parse(FILE* stream)
     Game_AgeInfo age;
     while (fgets(lnbuffer, 4096, stream)) {
         ST::string trimmed = ST::string(lnbuffer).before_first('#').trim();
-        if (trimmed.is_empty())
+        if (trimmed.empty())
             continue;
         std::vector<ST::string> line = trimmed.split('=');
         if (line.size() != 2) {
@@ -365,9 +363,12 @@ void DS::GameServer_Init()
         for (int i=0; i<count; ++i) {
             ST::string filename = ST::format("{}/{}", DS::Settings::AgePath(), dirls[i]->d_name);
             std::unique_ptr<FILE, std::function<int (FILE*)>> ageFile(fopen(filename.c_str(), "r"), &fclose);
-            if (ageFile.get()) {
+            if (ageFile) {
                 char magic[12];
-                fread(magic, 1, 12, ageFile.get());
+                if (fread(magic, 1, 12, ageFile.get()) != 12) {
+                    fprintf(stderr, "[Game] Error: File %s is empty\n", filename.c_str());
+                    break;
+                }
                 if (memcmp(magic, "whatdoyousee", 12) == 0 || memcmp(magic, "notthedroids", 12) == 0
                     || memcmp(magic, "BriceIsSmart", 12) == 0) {
                     fputs("[Game] Error: Please decrypt your .age files before using!\n", stderr);
@@ -432,7 +433,7 @@ void DS::GameServer_UpdateGlobalSDL(const ST::string& age)
         if (!it->second || it->second->m_ageFilename != age)
             continue;
         try {
-            it->second->m_channel.putMessage(e_GameGlobalSdlUpdate, 0);
+            it->second->m_channel.putMessage(e_GameGlobalSdlUpdate, nullptr);
         } catch (const std::exception& ex) {
             fprintf(stderr, "[Game] WARNING: %s\n", ex.what());
         }
@@ -444,14 +445,14 @@ bool DS::GameServer_UpdateVaultSDL(const DS::Vault::Node& node, uint32_t ageMcpI
 {
     s_gameHostMutex.lock();
     hostmap_t::iterator host_iter = s_gameHosts.find(ageMcpId);
-    GameHost_Private* host = 0;
+    GameHost_Private* host = nullptr;
     if (host_iter != s_gameHosts.end())
         host = host_iter->second;
     s_gameHostMutex.unlock();
 
     if (host) {
         Game_SdlMessage* msg = new Game_SdlMessage;
-        msg->m_node = node;
+        msg->m_node = node.copy();
         try {
             host->m_channel.putMessage(e_GameLocalSdlUpdate, msg);
             return true;

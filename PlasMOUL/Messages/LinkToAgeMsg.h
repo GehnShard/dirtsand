@@ -27,10 +27,10 @@ namespace MOUL
     {
         FACTORY_CREATABLE(LinkToAgeMsg)
 
-        virtual void read(DS::Stream* s);
-        virtual void write(DS::Stream* s) const;
+        void read(DS::Stream* s) override;
+        void write(DS::Stream* s) const override;
 
-        virtual bool makeSafeForNet();
+        bool makeSafeForNet() override;
 
     public:
         AgeLinkStruct* m_ageLink;
@@ -39,9 +39,9 @@ namespace MOUL
 
     protected:
         LinkToAgeMsg(uint16_t type)
-            : Message(type), m_ageLink(AgeLinkStruct::Create()) { }
+            : Message(type), m_ageLink(AgeLinkStruct::Create()), m_flags() { }
 
-        virtual ~LinkToAgeMsg() { m_ageLink->unref(); }
+        ~LinkToAgeMsg() override { m_ageLink->unref(); }
     };
 };
 

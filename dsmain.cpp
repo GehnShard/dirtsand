@@ -38,23 +38,19 @@
 #include <execinfo.h>
 #endif
 
-#ifdef DEBUG
-extern bool s_commdebug;
-#endif
-
 static char** dup_strlist(const char* text, const char** strlist, size_t count)
 {
     char** dupe;
     if (count == 1) {
         dupe = reinterpret_cast<char**>(malloc(sizeof(char*) * 2));
         dupe[0] = strdup(strlist[0]);
-        dupe[1] = 0;
+        dupe[1] = nullptr;
     } else {
         dupe = reinterpret_cast<char**>(malloc(sizeof(char*) * (count + 2)));
         dupe[0] = strdup(text);
         for (size_t i=0; i<count; ++i)
             dupe[i+1] = strdup(strlist[i]);
-        dupe[count+1] = 0;
+        dupe[count+1] = nullptr;
     }
     return dupe;
 }
@@ -79,7 +75,7 @@ static char** console_completer(const char* text, int start, int end)
             matches.push_back(completions[i]);
     }
     if (matches.size() == 0)
-        return 0;
+        return nullptr;
     return dup_strlist(text, matches.data(), matches.size());
 }
 
@@ -125,6 +121,73 @@ static void sigh_term(int)
     fclose(stdin);
 }
 
+static ST::string get_install_directory()
+{
+    // Assume we're running as <install_directory>/bin/dirtsand
+    char path[PATH_MAX];
+    ssize_t exe_len = readlink("/proc/self/exe", path, sizeof(path));
+    if (exe_len > 0) {
+        ST::string spath(path, exe_len);
+        ST_ssize_t slash = spath.find_last('/');
+        if (slash >= 0) {
+            spath = spath.left(slash);
+            if (spath.ends_with("/bin"))
+                return spath.left(spath.size() - 4);
+            return spath;
+        }
+    }
+
+    // Couldn't get it from /proc -- try assuming cwd
+    if (getcwd(path, sizeof(path)))
+        return ST::string(path);
+
+    // The OS is returning nonsense -- just use "."
+    return ST_LITERAL(".");
+}
+
+static void do_help()
+{
+    puts("dirtsand - D'ni in Real Time Server and Network Daemon");
+    puts("");
+    puts("Usage:  /path/to/dirtsand [options] [/path/to/dirtsand.ini]");
+    puts("");
+    puts("Options:");
+    puts("    --help              Show this information.");
+    puts("    --restrict-logins   Run the server with logins restricted.");
+    puts("    --generate-keys     Create a matching set of server and client keys.");
+}
+
+static void generate_keys()
+{
+    uint8_t nbuffer[3][64], kbuffer[3][64], xbuffer[64];
+    fputs("Generating new server keys...  This will take a while.", stdout);
+    fflush(stdout);
+    for (size_t i=0; i<3; ++i)
+        DS::GenPrimeKeys(nbuffer[i], kbuffer[i]);
+
+    fputs("\n--------------------\n", stdout);
+    fputs("Server keys: (dirtsand.ini)\n", stdout);
+    ST::printf("Key.Auth.N = {}\n", ST::base64_encode(nbuffer[0], 64));
+    ST::printf("Key.Auth.K = {}\n", ST::base64_encode(kbuffer[0], 64));
+    ST::printf("Key.Game.N = {}\n", ST::base64_encode(nbuffer[1], 64));
+    ST::printf("Key.Game.K = {}\n", ST::base64_encode(kbuffer[1], 64));
+    ST::printf("Key.Gate.N = {}\n", ST::base64_encode(nbuffer[2], 64));
+    ST::printf("Key.Gate.K = {}\n", ST::base64_encode(kbuffer[2], 64));
+
+    fputs("--------------------\n", stdout);
+    fputs("Client keys: (server.ini)\n", stdout);
+    DS::CryptCalcX(xbuffer, nbuffer[0], kbuffer[0], CRYPT_BASE_AUTH);
+    ST::printf("Server.Auth.N \"{}\"\n", ST::base64_encode(nbuffer[0], 64));
+    ST::printf("Server.Auth.X \"{}\"\n", ST::base64_encode(xbuffer, 64));
+    DS::CryptCalcX(xbuffer, nbuffer[1], kbuffer[1], CRYPT_BASE_GAME);
+    ST::printf("Server.Game.N \"{}\"\n", ST::base64_encode(nbuffer[1], 64));
+    ST::printf("Server.Game.X \"{}\"\n", ST::base64_encode(xbuffer, 64));
+    DS::CryptCalcX(xbuffer, nbuffer[2], kbuffer[2], CRYPT_BASE_GATE);
+    ST::printf("Server.Gate.N \"{}\"\n", ST::base64_encode(nbuffer[2], 64));
+    ST::printf("Server.Gate.X \"{}\"\n", ST::base64_encode(xbuffer, 64));
+    fputs("--------------------\n", stdout);
+}
+
 int main(int argc, char* argv[])
 {
     // refuse to run as root
@@ -136,24 +199,30 @@ int main(int argc, char* argv[])
     OpenSSL_add_all_digests();
 
     // Preset some arguments
-    const char* settings = 0;
+    ST::string settings = get_install_directory() + "/dirtsand.ini";
     bool restrictLogins = false;
 
     // Poor man command parser
     for (int i = 1; i < argc; ++i) {
         const char* arg = argv[i];
-        if (strcasecmp(arg, "--restrict-logins") == 0)
-            restrictLogins = true;
-        else
+        if (arg[0] == '-') {
+            if (strcmp(arg, "--restrict-logins") == 0) {
+                restrictLogins = true;
+            } else if (strcmp(arg, "--generate-keys") == 0) {
+                generate_keys();
+                exit(0);
+            } else if (strcmp(arg, "--help") == 0) {
+                do_help();
+                exit(0);
+            }
+        } else {
             settings = arg;
+        }
     }
 
-    if (settings) {
-        if (!DS::Settings::LoadFrom(settings))
-            return 1;
-    } else {
+    if (!DS::Settings::LoadFrom(settings)) {
+        fputs("Warning: Failed to load config file. Using defaults...\n", stderr);
         DS::Settings::UseDefaults();
-        fputs("Warning: No config file specified. Using defaults...\n", stderr);
     }
 
 #ifdef __GLIBC__
@@ -183,7 +252,7 @@ int main(int argc, char* argv[])
     char rl_prompt[32];
     snprintf(rl_prompt, 32, "ds-%u> ", DS::Settings::BuildId());
 
-    char* cmdbuf = 0;
+    char* cmdbuf = nullptr;
     rl_attempted_completion_function = &console_completer;
     for ( ;; ) {
         cmdbuf = readline(rl_prompt);
@@ -228,38 +297,12 @@ int main(int argc, char* argv[])
                 }
             }
         } else if (args[0] == "keygen") {
-            uint8_t xbuffer[64];
             if (args.size() != 2) {
                 fputs("Usage:  keygen <new|show>\n", stderr);
             } else if (args[1] == "new") {
-                uint8_t nbuffer[3][64], kbuffer[3][64];
-                fputs("Generating new server keys...  This will take a while.", stdout);
-                fflush(stdout);
-                for (size_t i=0; i<3; ++i)
-                    DS::GenPrimeKeys(nbuffer[i], kbuffer[i]);
-
-                fputs("\n--------------------\n", stdout);
-                fputs("Server keys: (dirtsand.ini)\n", stdout);
-                ST::printf("Key.Auth.N = {}\n", ST::base64_encode(nbuffer[0], 64));
-                ST::printf("Key.Auth.K = {}\n", ST::base64_encode(kbuffer[0], 64));
-                ST::printf("Key.Game.N = {}\n", ST::base64_encode(nbuffer[1], 64));
-                ST::printf("Key.Game.K = {}\n", ST::base64_encode(kbuffer[1], 64));
-                ST::printf("Key.Gate.N = {}\n", ST::base64_encode(nbuffer[2], 64));
-                ST::printf("Key.Gate.K = {}\n", ST::base64_encode(kbuffer[2], 64));
-
-                fputs("--------------------\n", stdout);
-                fputs("Client keys: (server.ini)\n", stdout);
-                DS::CryptCalcX(xbuffer, nbuffer[0], kbuffer[0], CRYPT_BASE_AUTH);
-                ST::printf("Server.Auth.N \"{}\"\n", ST::base64_encode(nbuffer[0], 64));
-                ST::printf("Server.Auth.X \"{}\"\n", ST::base64_encode(xbuffer, 64));
-                DS::CryptCalcX(xbuffer, nbuffer[1], kbuffer[1], CRYPT_BASE_GAME);
-                ST::printf("Server.Game.N \"{}\"\n", ST::base64_encode(nbuffer[1], 64));
-                ST::printf("Server.Game.X \"{}\"\n", ST::base64_encode(xbuffer, 64));
-                DS::CryptCalcX(xbuffer, nbuffer[2], kbuffer[2], CRYPT_BASE_GATE);
-                ST::printf("Server.Gate.N \"{}\"\n", ST::base64_encode(nbuffer[2], 64));
-                ST::printf("Server.Gate.X \"{}\"\n", ST::base64_encode(xbuffer, 64));
-                fputs("--------------------\n", stdout);
+                generate_keys();
             } else if (args[1] == "show") {
+                uint8_t xbuffer[64];
                 DS::CryptCalcX(xbuffer, DS::Settings::CryptKey(DS::e_KeyAuth_N),
                                DS::Settings::CryptKey(DS::e_KeyAuth_K), CRYPT_BASE_AUTH);
                 ST::printf("Server.Auth.N \"{}\"\n", ST::base64_encode(DS::Settings::CryptKey(DS::e_KeyAuth_N), 64));

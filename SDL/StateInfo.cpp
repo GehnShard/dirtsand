@@ -95,21 +95,17 @@ void SDL::Variable::_ref::resize(size_t size)
     case e_VarVector3:
     case e_VarPoint3:
         m_vector = new DS::Vector3[m_size];
-        memset(m_vector, 0, m_size * sizeof(DS::Vector3));
         break;
     case e_VarQuaternion:
         m_quat = new DS::Quaternion[m_size];
-        memset(m_quat, 0, m_size * sizeof(DS::Quaternion));
         break;
     case e_VarRgb:
     case e_VarRgba:
         m_color = new DS::ColorRgba[m_size];
-        memset(m_color, 0, m_size * sizeof(DS::ColorRgba));
         break;
     case e_VarRgb8:
     case e_VarRgba8:
         m_color8 = new DS::ColorRgba8[m_size];
-        memset(m_color8, 0, m_size * sizeof(DS::ColorRgba8));
         break;
     case e_VarStateDesc:
         m_child = new SDL::State[m_size];
@@ -424,7 +420,7 @@ void SDL::Variable::read(DS::Stream* stream)
 void SDL::Variable::write(DS::Stream* stream) const
 {
     uint8_t contents = 0;
-    if (!m_data->m_notificationHint.is_empty())
+    if (!m_data->m_notificationHint.empty())
         contents |= e_HasNotificationInfo;
     stream->write<uint8_t>(contents);
     if (contents & e_HasNotificationInfo) {
@@ -661,7 +657,7 @@ void SDL::Variable::setDefault()
             break;
         case e_VarCreatable:
             m_data->m_creatable[i]->unref();
-            m_data->m_creatable[i] = 0;
+            m_data->m_creatable[i] = nullptr;
             break;
         case e_VarDouble:
             if (m_data->m_desc->m_default.m_valid)
@@ -785,7 +781,7 @@ bool SDL::Variable::isDefault() const
                 return false;
             break;
         case e_VarCreatable:
-            if (m_data->m_creatable[i] != 0)
+            if (m_data->m_creatable[i] != nullptr)
                 return false;
             break;
         case e_VarDouble:
@@ -851,7 +847,7 @@ bool SDL::Variable::isDefault() const
 }
 
 SDL::State::State(SDL::StateDescriptor* desc)
-    : m_data(0)
+    : m_data()
 {
     if (desc) {
         m_data = new _ref(desc);

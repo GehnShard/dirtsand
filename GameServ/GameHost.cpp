@@ -154,14 +154,14 @@ void dm_propagate_to(GameHost_Private* host, MOUL::NetMessage* msg,
     DM_UNREFBUF();
 }
 
-void dm_local_sdl_update(GameHost_Private* host, const DS::Blob& blob)
+void dm_local_sdl_update(GameHost_Private* host, DS::Blob blob)
 {
     Auth_NodeInfo sdlNode;
     AuthClient_Private fakeClient;
     sdlNode.m_client = &fakeClient;
     sdlNode.m_internal = true;
     sdlNode.m_node.set_NodeIdx(host->m_sdlIdx);
-    sdlNode.m_node.set_Blob_1(blob);
+    sdlNode.m_node.set_Blob_1(std::move(blob));
     s_authChannel.putMessage(e_VaultUpdateNode, reinterpret_cast<void*>(&sdlNode));
     if (fakeClient.m_channel.getMessage().m_messageType != DS::e_NetSuccess)
         fputs("[Game] Error writing SDL node back to vault\n", stderr);
@@ -255,7 +255,7 @@ void dm_game_disconnect(GameHost_Private* host, Game_ClientMessage* msg)
     //       As it is, there might be a race condition if another player is
     //       joining just as the last player is leaving.
     if (host->m_clients.size() == 0)
-        host->m_channel.putMessage(e_GameShutdown, 0);
+        host->m_channel.putMessage(e_GameShutdown, nullptr);
 
     SEND_REPLY(msg, DS::e_NetSuccess);
 }
@@ -336,7 +336,7 @@ void dm_send_state(GameHost_Private* host, GameClient_Private* client)
         state->m_object.m_name = "AgeSDLHook";
         state->m_object.m_type = 1;  // SceneObject
         state->m_object.m_id = 1;
-        state->m_sdlBlob = ageSdlBlob;
+        state->m_sdlBlob = std::move(ageSdlBlob);
         DM_SENDMSG(state, client);
         ++states;
     }
@@ -626,7 +626,7 @@ void dm_load_clone(GameHost_Private* host, GameClient_Private* client,
 void dm_game_message(GameHost_Private* host, Game_PropagateMessage* msg)
 {
     DS::BlobStream stream(msg->m_message);
-    MOUL::NetMessage* netmsg = 0;
+    MOUL::NetMessage* netmsg = nullptr;
     try {
         netmsg = MOUL::Factory::Read<MOUL::NetMessage>(&stream);
     } catch (const MOUL::FactoryException&) {
@@ -759,7 +759,7 @@ void dm_local_sdl_update(GameHost_Private* host, Game_SdlMessage* msg)
     AuthClient_Private fakeClient;
     sdlNode.m_client = &fakeClient;
     sdlNode.m_internal = true;
-    sdlNode.m_node = msg->m_node;
+    sdlNode.m_node = std::move(msg->m_node);
     sdlNode.m_revision = DS::Uuid();
     s_authChannel.putMessage(e_VaultUpdateNode, reinterpret_cast<void*>(&sdlNode));
     if (fakeClient.m_channel.getMessage().m_messageType != DS::e_NetSuccess)
@@ -831,7 +831,7 @@ GameHost_Private* start_game_host(uint32_t ageMcpId)
     if (PQstatus(postgres) != CONNECTION_OK) {
         fprintf(stderr, "Error connecting to postgres: %s", PQerrorMessage(postgres));
         PQfinish(postgres);
-        return 0;
+        return nullptr;
     }
 
     DS::PGresultRef result = DS::PQexecVA(postgres,
@@ -843,13 +843,13 @@ GameHost_Private* start_game_host(uint32_t ageMcpId)
                 __FILE__, __LINE__, PQerrorMessage(postgres));
         result.reset();
         PQfinish(postgres);
-        return 0;
+        return nullptr;
     }
     if (PQntuples(result) == 0) {
         fprintf(stderr, "[Game] Age MCP %u not found\n", ageMcpId);
         result.reset();
         PQfinish(postgres);
-        return 0;
+        return nullptr;
     } else {
         if (PQntuples(result) != 1) {
             fprintf(stderr, "[Game] WARNING: Multiple servers found for MCP %u\n",
@@ -859,7 +859,7 @@ GameHost_Private* start_game_host(uint32_t ageMcpId)
         GameHost_Private* host = new GameHost_Private();
         host->m_instanceId = PQgetvalue(result, 0, 0);
         host->m_ageFilename = PQgetvalue(result, 0, 1);
-        host->m_ageIdx = strtoul(PQgetvalue(result, 0, 2), 0, 10);
+        host->m_ageIdx = strtoul(PQgetvalue(result, 0, 2), nullptr, 10);
         host->m_gameMaster = 0;
         host->m_serverIdx = ageMcpId;
         host->m_postgres = postgres;
@@ -870,7 +870,7 @@ GameHost_Private* start_game_host(uint32_t ageMcpId)
         AuthClient_Private fakeClient;
         sdlFetch.m_client = &fakeClient;
         sdlFetch.m_ageFilename = host->m_ageFilename;
-        sdlFetch.m_sdlNodeId = strtoul(PQgetvalue(result, 0, 3), 0, 10);
+        sdlFetch.m_sdlNodeId = strtoul(PQgetvalue(result, 0, 3), nullptr, 10);
         result.reset();
 
         s_authChannel.putMessage(e_AuthFetchSDL, reinterpret_cast<void*>(&sdlFetch));
@@ -879,7 +879,7 @@ GameHost_Private* start_game_host(uint32_t ageMcpId)
             fputs("[Game] Error fetching Age SDL\n", stderr);
             PQfinish(postgres);
             delete host;
-            return 0;
+            return nullptr;
         }
         host->m_sdlIdx = sdlFetch.m_sdlNodeId;
         host->m_globalState = sdlFetch.m_globalState;
@@ -892,7 +892,7 @@ GameHost_Private* start_game_host(uint32_t ageMcpId)
                     host->m_ageFilename.c_str(), ex.what());
             PQfinish(postgres);
             delete host;
-            return 0;
+            return nullptr;
         }
         if (!host->m_localState.descriptor()) {
             // NULL VaultSDL Node (or it doesn't exist) -- maybe there is a descriptor now?
@@ -900,14 +900,14 @@ GameHost_Private* start_game_host(uint32_t ageMcpId)
             if (desc) {
                 host->m_localState = SDL::State(desc);
                 DS::Blob local = host->m_localState.toBlob();
-                dm_local_sdl_update(host, local);
                 host->m_ageSdlHook = SDL::State::FromBlob(local);
+                dm_local_sdl_update(host, std::move(local));
             }
         } else if (host->m_localState.update()) {
             // The SDL Descriptor was updated
             DS::Blob local = host->m_localState.toBlob();
-            dm_local_sdl_update(host, local);
             host->m_ageSdlHook = SDL::State::FromBlob(local);
+            dm_local_sdl_update(host, std::move(local));
         } else {
             // Perfectly valid old SDL Blob
             host->m_ageSdlHook = SDL::State::FromBlob(sdlFetch.m_localState);
@@ -930,7 +930,8 @@ GameHost_Private* start_game_host(uint32_t ageMcpId)
             int count = PQntuples(result);
 
             for (int i=0; i<count; ++i) {
-                DS::BlobStream bsObject(DS::Base64Decode(PQgetvalue(result, i, 1)));
+                DS::Blob objblob = DS::Base64Decode(PQgetvalue(result, i, 1));
+                DS::BlobStream bsObject(objblob);
                 DS::Blob sdlblob = DS::Base64Decode(PQgetvalue(result, i, 2));
                 MOUL::Uoid key;
                 key.read(&bsObject);

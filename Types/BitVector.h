@@ -25,7 +25,7 @@ namespace DS
     class BitVector
     {
     public:
-        BitVector() : m_bits(0), m_words(0) { }
+        BitVector() : m_bits(), m_words() { }
 
         BitVector(const BitVector& copy) : m_words(copy.m_words)
         {
@@ -33,8 +33,11 @@ namespace DS
             memcpy(m_bits, copy.m_bits, m_words);
         }
 
-        BitVector(const BitVector&& move)
-            : m_bits(move.m_bits), m_words(move.m_words) { }
+        BitVector(BitVector&& move)
+            : m_bits(move.m_bits), m_words(move.m_words)
+        {
+            move.m_bits = nullptr;
+        }
 
         ~BitVector() { delete[] m_bits; }
 
@@ -55,11 +58,12 @@ namespace DS
             return *this;
         }
 
-        BitVector& operator=(const BitVector&& move)
+        BitVector& operator=(BitVector&& move)
         {
             delete[] m_bits;
             m_bits = move.m_bits;
             m_words = move.m_words;
+            move.m_bits = nullptr;
             return *this;
         }
 

@@ -23,6 +23,7 @@
 #include <vector>
 #include <list>
 #include <map>
+#include <unordered_map>
 #include <thread>
 #include <mutex>
 
@@ -56,6 +57,7 @@ enum AuthServer_MsgIds
     e_CliToAuth_ScoreSetPoints, e_CliToAuth_ScoreGetRanks,
     e_CliToAuth_AcctExistsRequest,
     e_CliToAuth_AgeRequestEx = 0x1000, e_CliToAuth_ScoreGetHighScores,
+    e_AuthToCli_ServerCaps,
 
     e_AuthToCli_PingReply = 0, kAuthToCli_ServerAddr, e_AuthToCli_NotifyNewBuild,
     e_AuthToCli_ClientRegisterReply, e_AuthToCli_AcctLoginReply,
@@ -84,6 +86,11 @@ enum AuthServer_MsgIds
     e_AuthToCli_AgeReplyEx = 0x1000, e_AuthToCli_ScoreGetHighScoresReply,
 };
 
+enum ServerCaps
+{
+    e_CapsScoreLeaderBoards,
+};
+
 struct AuthServer_Private : public AuthClient_Private
 {
     DS::BufferStream m_buffer;
@@ -109,6 +116,10 @@ struct AuthServer_Private : public AuthClient_Private
 extern std::list<AuthServer_Private*> s_authClients;
 extern std::mutex s_authClientMutex;
 extern std::thread s_authDaemonThread;
+
+extern PGconn* s_postgres;
+extern uint32_t s_allPlayers;
+extern std::unordered_map<ST::string, SDL::State, ST::hash_i, ST::equal_i> s_globalStates;
 
 void dm_authDaemon();
 bool dm_vault_init();

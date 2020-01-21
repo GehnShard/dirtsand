@@ -46,21 +46,21 @@ namespace MOUL
         void setTitle(const ST::string& title)
         {
             m_title = title;
-            m_flags.set(e_HasTitle, !title.is_empty());
+            m_flags.set(e_HasTitle, !title.empty());
         }
 
         ST::string name() const { return m_spawnPt; }
         void setName(const ST::string& name)
         {
             m_spawnPt = name;
-            m_flags.set(e_HasName, !name.is_empty());
+            m_flags.set(e_HasName, !name.empty());
         }
 
         ST::string cameraStack() const { return m_cameraStack; }
         void setCameraStack(const ST::string& stack)
         {
             m_cameraStack = stack;
-            m_flags.set(e_HasCameraStack, !stack.is_empty());
+            m_flags.set(e_HasCameraStack, !stack.empty());
         }
 
     protected:
@@ -72,22 +72,22 @@ namespace MOUL
     {
         FACTORY_CREATABLE(AgeInfoStruct)
 
-        virtual void read(DS::Stream* s);
-        virtual void write(DS::Stream* s) const;
+        void read(DS::Stream* s) override;
+        void write(DS::Stream* s) const override;
 
     public:
         ST::string filename() const { return m_ageFilename; }
         void setFilename(const ST::string& filename)
         {
             m_ageFilename = filename;
-            UPDATEFLAG(e_HasAgeFilename, !filename.is_empty());
+            UPDATEFLAG(e_HasAgeFilename, !filename.empty());
         }
 
         ST::string instanceName() const { return m_ageInstanceName; }
         void setInstanceName(const ST::string& name)
         {
             m_ageInstanceName = name;
-            UPDATEFLAG(e_HasAgeInstanceName, !name.is_empty());
+            UPDATEFLAG(e_HasAgeInstanceName, !name.empty());
         }
 
         DS::Uuid instanceUuid() const { return m_ageInstanceUuid; }
@@ -101,7 +101,7 @@ namespace MOUL
         void setUserDefinedName(const ST::string& name)
         {
             m_ageUserDefinedName = name;
-            UPDATEFLAG(e_HasAgeUserDefinedName, !name.is_empty());
+            UPDATEFLAG(e_HasAgeUserDefinedName, !name.empty());
         }
 
         int32_t sequenceNumber() const { return m_ageSequenceNumber; }
@@ -115,7 +115,7 @@ namespace MOUL
         void setDescription(const ST::string& description)
         {
             m_ageDescription = description;
-            UPDATEFLAG(e_HasAgeDescription, !description.is_empty());
+            UPDATEFLAG(e_HasAgeDescription, !description.empty());
         }
 
         int32_t language() const { return m_ageLanguage; }
@@ -154,8 +154,8 @@ namespace MOUL
     {
         FACTORY_CREATABLE(AgeLinkStruct)
 
-        virtual void read(DS::Stream* s);
-        virtual void write(DS::Stream* s) const;
+        void read(DS::Stream* s) override;
+        void write(DS::Stream* s) const override;
 
     public:
         SpawnPointInfo& spawnPt() { return m_spawnPt; }
@@ -179,7 +179,7 @@ namespace MOUL
         void setParentAgeFilename(const ST::string& filename)
         {
             m_parentAgeFilename = filename;
-            UPDATEFLAG(e_HasParentAgeFilename, !filename.is_empty());
+            UPDATEFLAG(e_HasParentAgeFilename, !filename.empty());
         }
 
     protected:
@@ -205,7 +205,7 @@ namespace MOUL
             : Creatable(type), m_flags(e_HasSpawnPt | e_HasAgeInfo),
               m_ageInfo(AgeInfoStruct::Create()), m_linkingRules(), m_amCcr() { }
 
-        virtual ~AgeLinkStruct() { m_ageInfo->unref(); }
+        ~AgeLinkStruct() override { m_ageInfo->unref(); }
     };
 };
 

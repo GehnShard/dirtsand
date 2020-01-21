@@ -26,19 +26,17 @@ ST::string DS::Stream::readString(size_t length, DS::StringType format)
 {
     if (format == e_StringUTF16) {
         ST::utf16_buffer result;
-        char16_t* buffer = result.create_writable_buffer(length);
-        ssize_t bytes = readBytes(buffer, length * sizeof(char16_t));
+        result.allocate(length);
+        ssize_t bytes = readBytes(result.data(), length * sizeof(char16_t));
         if (bytes != static_cast<ssize_t>(length * sizeof(char16_t)))
             throw EofException();
-        buffer[length] = 0;
         return ST::string::from_utf16(result, ST::substitute_invalid);
     } else {
         ST::char_buffer result;
-        char* buffer = result.create_writable_buffer(length);
-        ssize_t bytes = readBytes(buffer, length * sizeof(char));
+        result.allocate(length);
+        ssize_t bytes = readBytes(result.data(), length * sizeof(char));
         if (bytes != static_cast<ssize_t>(length * sizeof(char)))
             throw EofException();
-        buffer[length] = 0;
         return (format == e_StringUTF8) ? ST::string::from_utf8(result, ST::substitute_invalid)
                                         : ST::string::from_latin_1(result);
     }
@@ -53,28 +51,26 @@ ST::string DS::Stream::readSafeString(DS::StringType format)
 
     if (format == e_StringUTF16) {
         ST::utf16_buffer result;
-        char16_t* buffer = result.create_writable_buffer(length);
-        ssize_t bytes = readBytes(buffer, length * sizeof(char16_t));
+        result.allocate(length);
+        ssize_t bytes = readBytes(result.data(), length * sizeof(char16_t));
         read<char16_t>(); // redundant u'\0'
         if (bytes != static_cast<ssize_t>(length * sizeof(char16_t)))
             throw EofException();
-        if (length && (buffer[0] & 0x8000)) {
+        if ((result.front() & 0x8000) != 0) {
             for (uint16_t i=0; i<length; ++i)
-                buffer[i] = ~buffer[i];
+                result[i] = ~result[i];
         }
-        buffer[length] = 0;
         return ST::string::from_utf16(result, ST::substitute_invalid);
     } else {
         ST::char_buffer result;
-        char* buffer = result.create_writable_buffer(length);
-        ssize_t bytes = readBytes(buffer, length * sizeof(char));
+        result.allocate(length);
+        ssize_t bytes = readBytes(result.data(), length * sizeof(char));
         if (bytes != static_cast<ssize_t>(length * sizeof(char)))
             throw EofException();
-        if (length && (buffer[0] & 0x80)) {
+        if ((result.front() & 0x80) != 0) {
             for (uint16_t i=0; i<length; ++i)
-                buffer[i] = ~buffer[i];
+                result[i] = ~result[i];
         }
-        buffer[length] = 0;
         return (format == e_StringUTF8)
                ? ST::string::from_utf8(result, ST::substitute_invalid)
                : ST::string::from_latin_1(result);
@@ -98,25 +94,19 @@ void DS::Stream::writeSafeString(const ST::string& value, DS::StringType format)
     if (format == e_StringUTF16) {
         ST::utf16_buffer buffer = value.to_utf16();
         uint16_t length = value.size() & 0x0FFF;
-        ST::utf16_buffer work;
-        char16_t* data = work.create_writable_buffer(length);
-        memcpy(data, buffer.data(), length * sizeof(char16_t));
         for (uint16_t i=0; i<length; ++i)
-            data[i] = ~data[i];
+            buffer[i] = ~buffer[i];
         write<uint16_t>(length | 0xF000);
-        writeBytes(data, length * sizeof(char16_t));
+        writeBytes(buffer.data(), length * sizeof(char16_t));
         write<char16_t>(0);
     } else {
         ST::char_buffer buffer = (format == e_StringUTF8) ? value.to_utf8()
                                : value.to_latin_1(ST::substitute_invalid);
         uint16_t length = value.size() & 0x0FFF;
-        ST::char_buffer work;
-        char* data = work.create_writable_buffer(length);
-        memcpy(data, buffer.data(), length * sizeof(char));
         for (uint16_t i=0; i<length; ++i)
-            data[i] = ~data[i];
+            buffer[i] = ~buffer[i];
         write<uint16_t>(length | 0xF000);
-        writeBytes(data, length * sizeof(char));
+        writeBytes(buffer.data(), length * sizeof(char));
     }
 }
 
@@ -128,10 +118,17 @@ void DS::FileStream::open(const char* filename, const char* mode)
         throw FileIOException(strerror(errno));
 }
 
+void DS::FileStream::seek(int32_t offset, int whence)
+{
+    if (fseek(m_file, offset, whence) < 0)
+        throw FileIOException(strerror(errno));
+}
+
 uint32_t DS::FileStream::size() const
 {
     struct stat statbuf;
-    fstat(fileno(m_file), &statbuf);
+    if (fstat(fileno(m_file), &statbuf) < 0)
+        throw FileIOException(strerror(errno));
     return static_cast<uint32_t>(statbuf.st_size);
 }
 
@@ -196,7 +193,7 @@ void DS::BufferStream::set(const void* data, size_t size)
         m_buffer = new uint8_t[m_alloc];
         memcpy(m_buffer, data, m_size);
     } else {
-        m_buffer = 0;
+        m_buffer = nullptr;
         m_size = m_alloc = 0;
     }
     m_position = 0;

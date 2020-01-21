@@ -17,6 +17,7 @@
 
 #include "AuthServer_Private.h"
 #include "AuthManifest.h"
+#include "Types/BitVector.h"
 #include "Types/Uuid.h"
 #include "settings.h"
 #include "errors.h"
@@ -25,8 +26,6 @@
 #include <poll.h>
 
 #define NODE_SIZE_MAX (4 * 1024 * 1024)
-
-extern bool s_commdebug;
 
 std::list<AuthServer_Private*> s_authClients;
 std::mutex s_authClientMutex;
@@ -80,8 +79,21 @@ void auth_init(AuthServer_Private& client)
         client.m_buffer.writeBytes(serverSeed, 7);
     }
 
-    /* send reply */
+    /* send encryption reply */
     DS::SendBuffer(client.m_sock, client.m_buffer.buffer(), client.m_buffer.size());
+
+    /* Shard Capabilities */
+    DS::BitVector caps;
+    caps.set(e_CapsScoreLeaderBoards, true);
+
+    /* BCast Shard Capabilities */
+    START_REPLY(e_AuthToCli_ServerCaps);
+    uint32_t bufSzPos = client.m_buffer.tell();
+    client.m_buffer.write<uint32_t>(0);
+    caps.write(&client.m_buffer);
+    client.m_buffer.seek(bufSzPos, 0);
+    client.m_buffer.write<uint32_t>(client.m_buffer.size() - bufSzPos - sizeof(uint32_t));
+    SEND_REPLY();
 }
 
 void cb_ping(AuthServer_Private& client)
@@ -437,7 +449,7 @@ void cb_nodeTree(AuthServer_Private& client)
             client.m_buffer.write<uint32_t>(it->m_parent);
             client.m_buffer.write<uint32_t>(it->m_child);
             client.m_buffer.write<uint32_t>(it->m_owner);
-            client.m_buffer.write<uint8_t>(it->m_seen);
+            client.m_buffer.write<uint8_t>(0);
         }
     }
 
@@ -689,7 +701,7 @@ void cb_scoreCreate(AuthServer_Private& client)
         client.m_buffer.write<uint32_t>(0); // Create Time
     } else {
         client.m_buffer.write<uint32_t>(msg.m_scoreId);
-        client.m_buffer.write<uint32_t>((uint32_t)time(0)); // close enough.
+        client.m_buffer.write<uint32_t>((uint32_t)time(nullptr)); // close enough.
     }
     SEND_REPLY();
 }
@@ -1016,7 +1028,7 @@ void cb_broadcast(AuthServer_Private& client)
 void wk_authWorker(DS::SocketHandle sockp)
 {
     AuthServer_Private client;
-    client.m_crypt = 0;
+    client.m_crypt = nullptr;
     client.m_sock = sockp;
 
     try {

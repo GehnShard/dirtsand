@@ -47,7 +47,8 @@ struct SocketHandle_Private
     };
     socklen_t m_addrLen;
 
-    SocketHandle_Private() : m_addrLen(sizeof(m_addrMax)) { }
+    SocketHandle_Private(int fd)
+        : m_sockfd(fd), m_addrLen(sizeof(m_addrMax)) { }
 };
 
 static void* get_in_addr(SocketHandle_Private* sock)
@@ -78,18 +79,14 @@ DS::SocketHandle DS::BindSocket(const char* address, const char* port)
     addrinfo* addrList;
     result = getaddrinfo(address, port, &info, &addrList);
     if (result != 0) {
-        if (result == EAI_SYSTEM) {
-            fprintf(stderr, "Failed to bind to %s:%s: %s\n",
-                    address, port, strerror(errno));
-        } else {
-            fprintf(stderr, "Failed to bind to %s:%s: %s\n",
-                    address, port, gai_strerror(result));
-        }
-        exit(1);
+        const char *error_text = (result == EAI_SYSTEM)
+                               ? strerror(errno) : gai_strerror(result);
+        auto message = ST::format("Failed to bind to {}:{}", address, port);
+        throw SystemError(message.c_str(), error_text);
     }
 
     addrinfo* addr_iter;
-    for (addr_iter = addrList; addr_iter != 0; addr_iter = addr_iter->ai_next) {
+    for (addr_iter = addrList; addr_iter != nullptr; addr_iter = addr_iter->ai_next) {
         sockfd = socket(addr_iter->ai_family, addr_iter->ai_socktype,
                         addr_iter->ai_protocol);
         if (sockfd == -1)
@@ -97,7 +94,8 @@ DS::SocketHandle DS::BindSocket(const char* address, const char* port)
 
         // Avoid annoying "Address already in use" messages when restarting
         // the server.
-        setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &SOCK_YES, sizeof(SOCK_YES));
+        if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &SOCK_YES, sizeof(SOCK_YES)) < 0)
+            fprintf(stderr, "[Bind] Warning: Failed to set socket address reuse: %s\n", strerror(errno));
         if (bind(sockfd, addr_iter->ai_addr, addr_iter->ai_addrlen) == 0)
             break;
         fprintf(stderr, "[Bind] %s\n", strerror(errno));
@@ -109,18 +107,16 @@ DS::SocketHandle DS::BindSocket(const char* address, const char* port)
 
     // Die if we didn't get a successful socket
     if (!addr_iter) {
-        fprintf(stderr, "Failed to bind a usable socket on %s:%s\n", address, port);
-        exit(1);
+        auto message = ST::format("Failed to bind to a usable socket on {}:{}", address, port);
+        throw SystemError(message.c_str());
     }
 
-    SocketHandle_Private* sockinfo = new SocketHandle_Private();
-    sockinfo->m_sockfd = sockfd;
+    SocketHandle_Private* sockinfo = new SocketHandle_Private(sockfd);
     result = getsockname(sockfd, &sockinfo->m_addr, &sockinfo->m_addrLen);
     if (result != 0) {
-        fprintf(stderr, "Failed to get bound socket address: %s\n",
-                strerror(errno));
+        const char *error_text = strerror(errno);
         delete sockinfo;
-        exit(1);
+        throw SystemError("Failed to get bound socket address", error_text);
     }
     return reinterpret_cast<SocketHandle>(sockinfo);
 }
@@ -131,9 +127,8 @@ void DS::ListenSock(const DS::SocketHandle sock, int backlog)
     int result = listen(reinterpret_cast<SocketHandle_Private*>(sock)->m_sockfd, backlog);
     if (result < 0) {
         const char *error_text = strerror(errno);
-        fprintf(stderr, "Failed to listen on %s: %s\n",
-                DS::SockIpAddress(sock).c_str(), error_text);
-        exit(1);
+        auto message = ST::format("Failed to listen on {}", DS::SockIpAddress(sock));
+        throw SystemError(message.c_str(), error_text);
     }
 }
 
@@ -142,7 +137,7 @@ DS::SocketHandle DS::AcceptSock(const DS::SocketHandle sock)
     DS_ASSERT(sock);
     SocketHandle_Private* sockp = reinterpret_cast<SocketHandle_Private*>(sock);
 
-    SocketHandle_Private* client = new SocketHandle_Private();
+    SocketHandle_Private* client = new SocketHandle_Private(-1);
     client->m_sockfd = accept(sockp->m_sockfd, &client->m_addr, &client->m_addrLen);
     if (client->m_sockfd < 0) {
         delete client;
@@ -159,9 +154,11 @@ DS::SocketHandle DS::AcceptSock(const DS::SocketHandle sock)
     timeval tv;
     tv.tv_sec = NET_TIMEOUT;
     tv.tv_usec = 0;
-    setsockopt(client->m_sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (setsockopt(client->m_sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
+        fprintf(stderr, "Warning: Failed to set recv timeout: %s\n", strerror(errno));
     // eap-tastic protocols require Nagle's algo be disabled
-    setsockopt(client->m_sockfd, IPPROTO_TCP, TCP_NODELAY, &SOCK_YES, sizeof(SOCK_YES));
+    if (setsockopt(client->m_sockfd, IPPROTO_TCP, TCP_NODELAY, &SOCK_YES, sizeof(SOCK_YES)) < 0)
+        fprintf(stderr, "Warning: Failed to set TCP nodelay: %s\n", strerror(errno));
     return reinterpret_cast<SocketHandle>(client);
 }
 
@@ -256,7 +253,8 @@ void DS::SendFile(const DS::SocketHandle sock, const void* buffer, size_t bufsz,
     SocketHandle_Private* imp = reinterpret_cast<SocketHandle_Private*>(sock);
 
     // Send the prepended buffer
-    setsockopt(imp->m_sockfd, IPPROTO_TCP, TCP_CORK, &SOCK_YES, sizeof(SOCK_YES));
+    if (setsockopt(imp->m_sockfd, IPPROTO_TCP, TCP_CORK, &SOCK_YES, sizeof(SOCK_YES)) < 0)
+        fprintf(stderr, "Warning: Failed to set cork option: %s", strerror(errno));
     while (bufsz > 0) {
         ssize_t bytes = send(imp->m_sockfd, buffer, bufsz, 0);
         if (bytes < 0) {
@@ -292,7 +290,8 @@ void DS::SendFile(const DS::SocketHandle sock, const void* buffer, size_t bufsz,
         }
         fdsz -= bytes;
     }
-    setsockopt(imp->m_sockfd, IPPROTO_TCP, TCP_CORK, &SOCK_NO, sizeof(SOCK_NO));
+    if (setsockopt(imp->m_sockfd, IPPROTO_TCP, TCP_CORK, &SOCK_NO, sizeof(SOCK_NO)) < 0)
+        fprintf(stderr, "Warning: Failed to set cork option: %s", strerror(errno));
 }
 
 void DS::RecvBuffer(const DS::SocketHandle sock, void* buffer, size_t size)

@@ -26,8 +26,6 @@
 #include <mutex>
 #include <chrono>
 
-extern bool s_commdebug;
-
 struct GateKeeper_Private
 {
     DS::SocketHandle m_sock;
@@ -158,7 +156,7 @@ void cb_authServIpAddress(GateKeeper_Private& client)
 void wk_gateKeeper(DS::SocketHandle sockp)
 {
     GateKeeper_Private client;
-    client.m_crypt = 0;
+    client.m_crypt = nullptr;
 
     s_clientMutex.lock();
     client.m_sock = sockp;
