@@ -713,14 +713,12 @@ v_create_player(DS::Uuid acctId, const AuthServer_PlayerInfo& player)
     if (cityLink == 0)
         return std::make_tuple(0, 0, 0);
     
-    link = DS::Blob(reinterpret_cast<const uint8_t*>("Great Zero Observation:LinkInPointDefault:;"),
-                    strlen("Great Zero Observation:LinkInPointDefault:;"));
     node.clear();
     node.clear();
     node.set_NodeType(DS::Vault::e_NodeAgeLink);
     node.set_CreatorUuid(acctId);
     node.set_CreatorIdx(playerIdx);
-    node.set_Blob_1(link);
+    node.set_Blob_1(DS::Blob::FromString("Great Zero Observation:LinkInPointDefault:;"));
     uint32_t gzLink = v_create_node(node);
     if (gzLink == 0)
         return std::make_tuple(0, 0, 0);
