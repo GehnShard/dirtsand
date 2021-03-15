@@ -153,9 +153,9 @@ bool DS::Settings::LoadFrom(const ST::string& filename)
             } else if (params[0] == "Key.Droid") {
                 Blob data = HexDecode(params[1]);
                 if (data.size() != 16) {
-                    fprintf(stderr, "Invalid key size for Key.Droid: "
-                                    "Expected 16 bytes, got %zu bytes\n",
-                            data.size());
+                    ST::printf(stderr, "Invalid key size for Key.Droid: "
+                                       "Expected 16 bytes, got {} bytes\n",
+                               data.size());
                     return false;
                 }
                 s_settings.m_droidKey[0] = BUF_TO_UINT(data.buffer()     );
@@ -230,7 +230,7 @@ void DS::Settings::UseDefaults()
     s_settings.m_dbHostname = ST_LITERAL("localhost");
     s_settings.m_dbPort = ST_LITERAL("5432");
     s_settings.m_dbUsername = ST_LITERAL("dirtsand");
-    s_settings.m_dbPassword = ST::null;
+    s_settings.m_dbPassword = ST::string();
     s_settings.m_dbDbase = ST_LITERAL("dirtsand");
 }
 
