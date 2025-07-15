@@ -15,28 +15,5 @@
  * along with dirtsand.  If not, see <http://www.gnu.org/licenses/>.          *
  ******************************************************************************/
 
-#ifndef _DS_GAMESERVER_H
-#define _DS_GAMESERVER_H
-
-#include "NetIO/SockIO.h"
-#include "Types/Uuid.h"
-#include <exception>
-
-namespace DS
-{
-    namespace Vault {
-        class Node;
-    }
-
-    void GameServer_Init();
-    void GameServer_Add(SocketHandle client);
-    void GameServer_Shutdown();
-
-    void GameServer_UpdateGlobalSDL(const ST::string& age);
-    uint32_t GameServer_UpdateVaultSDL(const DS::Vault::Node& node, uint32_t ageMcpId);
-
-    void GameServer_DisplayClients();
-    uint32_t GameServer_GetNumClients(Uuid instance);
-}
-
-#endif
+#define CATCH_CONFIG_MAIN  // This tells Catch to provide a main()
+#include <catch2/catch.hpp>

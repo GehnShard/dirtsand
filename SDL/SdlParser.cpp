@@ -16,6 +16,8 @@
  ******************************************************************************/
 
 #include "SdlParser.h"
+#include "settings.h"
+#include "streams.h"
 
 #include <string_theory/stdio>
 
@@ -27,31 +29,51 @@ static const char* s_toknames[] = {
     "<Identifier>", "<Number>", "<String>", "<Typename>",
 };
 
+DS::Stream* SDL::Parser::stream() const
+{
+    if (m_encStream)
+        return m_encStream;
+    else
+        return m_fileStream;
+}
+
 bool SDL::Parser::open(const char* filename)
 {
-    char sanitycheck[12];
-
-    m_file = fopen(filename, "r");
-    if (!m_file) {
-        ST::printf(stderr, "[SDL] Error opening file {} for reading\n", filename);
+    m_fileStream = new DS::FileStream();
+    try {
+        m_fileStream->open(filename, "r");
+    } catch (DS::FileIOException& ex) {
+        ST::printf(stderr, "[SDL] Error opening file {} for reading: {}\n", filename, ex.what());
+        close();
         return false;
     }
-    memset(sanitycheck, 0, sizeof(sanitycheck));
-    fread(sanitycheck, 1, 12, m_file);
-    fseek(m_file, 0, SEEK_SET);
-    if (memcmp(sanitycheck, "whatdoyousee", 12) == 0
-        || memcmp(sanitycheck, "notthedroids", 12) == 0
-        || memcmp(sanitycheck, "BriceIsSmart", 12) == 0) {
-        fputs("[SDL] Error: DirtSand does not support encrypted SDL sources\n", stderr);
-        fputs("[SDL] Please decrypt your SDL files and re-start DirtSand\n", stderr);
-        ST::printf(stderr, "[SDL] Error in file: {}\n", filename);
-        return false;
+
+    if (DS::EncryptedStream::CheckEncryption(m_fileStream).has_value()) {
+        try {
+            m_encStream = new DS::EncryptedStream(m_fileStream, DS::EncryptedStream::Mode::e_read);
+        } catch (DS::FileIOException& ex) {
+            ST::printf(stderr, "[SDL] Error opening file {} for reading: {}\n", filename, ex.what());
+            close();
+            return false;
+        }
+        if (m_encStream->getEncType() == DS::EncryptedStream::Type::e_xxtea)
+            m_encStream->setKeys(DS::Settings::DroidKey());
     }
 
     m_filename = filename;
     m_lineno = 0;
     m_buffer.clear();
     return true;
+}
+
+void SDL::Parser::close()
+{
+    delete m_encStream;
+    m_encStream = nullptr;
+    delete m_fileStream;
+    m_fileStream = nullptr;
+    m_filename.clear();
+    m_lineno = -1;
 }
 
 static SDL::TokenType str_to_toktype(const ST::string& str)
@@ -112,7 +134,7 @@ SDL::Token SDL::Parser::next()
     while (m_buffer.empty()) {
         Token tokbuf;
         char lnbuf[4096];
-        if (!fgets(reinterpret_cast<char*>(lnbuf), 4096, m_file)) {
+        if (!m_fileStream->readLine(lnbuf, sizeof(lnbuf))) {
             tokbuf.m_type = e_TokEof;
             m_buffer.push_back(tokbuf);
             break;
@@ -544,14 +566,11 @@ std::list<SDL::StateDescriptor> SDL::Parser::parse()
             }
             break;
         case '}':
-            if (state == e_State_Var /*|| state == e_State_Var_SZ*/) {
-                descBuffer.m_vars.push_back(varBuffer);
-                descriptors.push_back(descBuffer);
-                state = e_State_File;
-            } else if (state == e_State_Statedesc) {
-                for (size_t i = 0; i < descBuffer.m_vars.size(); ++i) {
+            if (state == e_State_Var || state == e_State_Statedesc /*|| state == e_State_Var_SZ*/) {
+                if (state == e_State_Var)
+                    descBuffer.m_vars.push_back(varBuffer);
+                for (size_t i = 0; i < descBuffer.m_vars.size(); ++i)
                     descBuffer.m_varmap[descBuffer.m_vars[i].m_name] = i;
-                }
                 descriptors.push_back(descBuffer);
                 state = e_State_File;
             } else {

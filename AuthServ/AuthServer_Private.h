@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <thread>
 #include <mutex>
+#include <memory>
 
 enum AuthServer_MsgIds
 {
@@ -55,11 +56,10 @@ enum AuthServer_MsgIds
     e_CliToAuth_ScoreDelete, e_CliToAuth_ScoreGetScores,
     e_CliToAuth_ScoreAddPoints, e_CliToAuth_ScoreTransferPoints,
     e_CliToAuth_ScoreSetPoints, e_CliToAuth_ScoreGetRanks,
-    e_CliToAuth_AcctExistsRequest,
+    e_CliToAuth_AccountExistsRequest,
     e_CliToAuth_AgeRequestEx = 0x1000, e_CliToAuth_ScoreGetHighScores,
-    e_AuthToCli_ServerCaps,
 
-    e_AuthToCli_PingReply = 0, kAuthToCli_ServerAddr, e_AuthToCli_NotifyNewBuild,
+    e_AuthToCli_PingReply = 0, e_AuthToCli_ServerAddr, e_AuthToCli_NotifyNewBuild,
     e_AuthToCli_ClientRegisterReply, e_AuthToCli_AcctLoginReply,
     e_AuthToCli_AcctData, e_AuthToCli_AcctPlayerInfo,
     e_AuthToCli_AcctSetPlayerReply, e_AuthToCli_AcctCreateReply,
@@ -84,11 +84,18 @@ enum AuthServer_MsgIds
     e_AuthToCli_ScoreTransferPointsReply, e_AuthToCli_ScoreSetPointsReply,
     e_AuthToCli_ScoreGetRanksReply, e_AuthToCli_AcctExistsReply,
     e_AuthToCli_AgeReplyEx = 0x1000, e_AuthToCli_ScoreGetHighScoresReply,
+    e_AuthToCli_ServerCaps,
 };
 
 enum ServerCaps
 {
     e_CapsScoreLeaderBoards,
+    e_CapsGameMgrBlueSpiral,
+    e_CapsGameMgrClimbingWall,
+    e_CapsGameMgrHeek,
+    e_CapsGameMgrMarker,
+    e_CapsGameMgrTTT,
+    e_CapsGameMgrVarSync,
 };
 
 struct AuthServer_Private : public AuthClient_Private
@@ -99,18 +106,9 @@ struct AuthServer_Private : public AuthClient_Private
     uint32_t m_acctFlags;
     AuthServer_PlayerInfo m_player;
     uint32_t m_ageNodeId;
-    std::map<uint32_t, DS::Stream*> m_downloads;
+    std::map<uint32_t, std::unique_ptr<DS::Stream>> m_downloads;
 
     AuthServer_Private() : m_serverChallenge(0), m_acctFlags(0), m_ageNodeId(0) { }
-
-    ~AuthServer_Private()
-    {
-        while (!m_downloads.empty()) {
-            auto item = m_downloads.begin();
-            delete item->second;
-            m_downloads.erase(item);
-        }
-    }
 };
 
 extern std::list<AuthServer_Private*> s_authClients;

@@ -45,7 +45,7 @@ namespace DS
     void CryptCalcX(uint8_t* X, const uint8_t* N, const uint8_t* K, uint32_t base);
 
     void CryptEstablish(uint8_t* seed, uint8_t* key, const uint8_t* N,
-                        const uint8_t* K, uint8_t* Y);
+                        const uint8_t* K, const uint8_t* Y);
 
     typedef void* CryptState;
 
@@ -79,6 +79,7 @@ namespace DS
     ShaHash BuggyHashPassword(const ST::string& username, const ST::string& password);
     ShaHash BuggyHashLogin(const ShaHash& passwordHash, uint32_t serverChallenge,
                            uint32_t clientChallenge);
+    bool UseEmailAuth(const ST::string& username);
 }
 
 #ifdef DEBUG

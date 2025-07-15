@@ -269,7 +269,7 @@ void wk_gameWorker(DS::SocketHandle sockp)
                            strerror(errno));
                 throw DS::SockHup();
             }
-            if (result == 0 || fds[0].revents & POLLHUP)
+            if (result == 0 || fds[0].revents & (POLLERR | POLLHUP | POLLNVAL) || fds[1].revents & (POLLERR | POLLNVAL))
                 throw DS::SockHup();
 
             if (fds[0].revents & POLLIN)
@@ -441,26 +441,27 @@ void DS::GameServer_UpdateGlobalSDL(const ST::string& age)
 }
 
 
-bool DS::GameServer_UpdateVaultSDL(const DS::Vault::Node& node, uint32_t ageMcpId)
+uint32_t DS::GameServer_UpdateVaultSDL(const DS::Vault::Node& node, uint32_t ageMcpId)
 {
-    s_gameHostMutex.lock();
+    std::lock_guard<std::mutex> lock(s_gameHostMutex);
     hostmap_t::iterator host_iter = s_gameHosts.find(ageMcpId);
     GameHost_Private* host = nullptr;
     if (host_iter != s_gameHosts.end())
         host = host_iter->second;
-    s_gameHostMutex.unlock();
 
     if (host) {
-        Game_SdlMessage* msg = new Game_SdlMessage;
-        msg->m_node = node.copy();
+        GameClient_Private client;
+        Game_SdlMessage msg;
+        msg.m_client = &client;
+        msg.m_node = node.copy();
         try {
-            host->m_channel.putMessage(e_GameLocalSdlUpdate, msg);
-            return true;
+            host->m_channel.putMessage(e_GameLocalSdlUpdate, &msg);
+            return client.m_channel.getMessage().m_messageType;
         } catch (const std::exception& ex) {
             ST::printf(stderr, "[Game] WARNING: {}\n", ex.what());
         }
     }
-    return false;
+    return DS::e_NetAgeNotFound;
 }
 
 void DS::GameServer_DisplayClients()

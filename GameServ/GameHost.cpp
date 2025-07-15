@@ -332,7 +332,7 @@ void dm_send_state(GameHost_Private* host, GameClient_Private* client)
     DS::Blob ageSdlBlob = host->m_ageSdlHook.toBlob();
     if (ageSdlBlob.size()) {
         Game_AgeInfo info = s_ages[host->m_ageFilename];
-        state->m_object.m_location = MOUL::Location::Make(info.m_seqPrefix, -2, MOUL::Location::e_BuiltIn);
+        state->m_object.m_location = MOUL::Location(info.m_seqPrefix, -2, MOUL::Location::e_BuiltIn);
         state->m_object.m_name = "AgeSDLHook";
         state->m_object.m_type = 1;  // SceneObject
         state->m_object.m_id = 1;
@@ -660,7 +660,6 @@ void dm_game_message(GameHost_Private* host, Game_PropagateMessage* msg)
     try {
         switch (msg->m_messageType) {
         case MOUL::ID_NetMsgPagingRoom:
-            dm_propagate(host, netmsg, msg->m_client->m_clientInfo.m_PlayerId);
             break;
         case MOUL::ID_NetMsgGameStateRequest:
             dm_send_state(host, msg->m_client);
@@ -734,7 +733,7 @@ void dm_bcast_agesdl_hook(GameHost_Private* host)
     bcast->m_isInitial = true;
     bcast->m_persistOnServer = true;
     bcast->m_isAvatar = false;
-    bcast->m_object.m_location = MOUL::Location::Make(info.m_seqPrefix, -2, MOUL::Location::e_BuiltIn);
+    bcast->m_object.m_location = MOUL::Location(info.m_seqPrefix, -2, MOUL::Location::e_BuiltIn);
     bcast->m_object.m_name = "AgeSDLHook";
     bcast->m_object.m_type = 1;  // SceneObject
     bcast->m_object.m_id = 1;
@@ -746,7 +745,22 @@ void dm_bcast_agesdl_hook(GameHost_Private* host)
 
 void dm_local_sdl_update(GameHost_Private* host, Game_SdlMessage* msg)
 {
-    SDL::State vaultState = SDL::State::FromBlob(msg->m_node.m_Blob_1);
+    SDL::State vaultState;
+    try {
+        vaultState = SDL::State::FromBlob(msg->m_node.m_Blob_1);
+    } catch (const std::exception& ex) {
+        fprintf(stderr, "[SDL] Error parsing vault AgeSDL state: %s\n", ex.what());
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    }
+
+    if (!vaultState.descriptor()) {
+        fputs("[SDL] Received an vault update for an AgeSDLHook using an invalid descriptor!\n",
+              stderr);
+        SEND_REPLY(msg, DS::e_NetInternalError);
+        return;
+    }
+
     host->m_ageSdlHook.merge(vaultState);
     host->m_ageSdlHook.merge(host->m_globalState);
     host->m_localState.merge(vaultState);
@@ -758,6 +772,10 @@ void dm_local_sdl_update(GameHost_Private* host, Game_SdlMessage* msg)
     sdlNode.m_internal = true;
     sdlNode.m_node = std::move(msg->m_node);
     sdlNode.m_revision.clear();
+
+    // The client that put this message is the auth daemon, and it is blocking on us.
+    SEND_REPLY(msg, DS::e_NetSuccess);
+
     s_authChannel.putMessage(e_VaultUpdateNode, reinterpret_cast<void*>(&sdlNode));
     if (fakeClient.m_channel.getMessage().m_messageType != DS::e_NetSuccess)
         fputs("[Game] Error writing SDL node back to vault\n", stderr);

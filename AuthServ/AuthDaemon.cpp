@@ -51,8 +51,14 @@ void dm_auth_addacct(Auth_AddAcct* msg)
     }
 
     if (PQntuples(result) == 0) {
-        ST::char_buffer pwBuf = msg->m_acctInfo.m_password.to_utf8();
-        DS::ShaHash pwHash = DS::ShaHash::Sha1(pwBuf.data(), pwBuf.size());
+        DS::ShaHash pwHash;
+        if (DS::UseEmailAuth(msg->m_acctInfo.m_acctName)) {
+            pwHash = DS::BuggyHashPassword(msg->m_acctInfo.m_acctName,
+                                           msg->m_acctInfo.m_password);
+        } else {
+            ST::char_buffer pwBuf = msg->m_acctInfo.m_password.to_utf8();
+            pwHash = DS::ShaHash::Sha1(pwBuf.data(), pwBuf.size());
+        }
         result = DS::PQexecVA(s_postgres,
                 "INSERT INTO auth.\"Accounts\""
                 "    (\"AcctUuid\", \"PassHash\", \"Login\", \"AcctFlags\", \"BillingType\")"
@@ -136,7 +142,7 @@ void dm_auth_login(Auth_LoginInfo* info)
     }
 
     DS::ShaHash passhash = PQgetvalue(result, 0, 0);
-    if (info->m_acctName.find("@") != -1 && info->m_acctName.find("@gametap") == -1) {
+    if (DS::UseEmailAuth(info->m_acctName)) {
         DS::ShaHash challengeHash = DS::BuggyHashLogin(passhash,
                 client->m_serverChallenge, info->m_clientChallenge);
         if (challengeHash != info->m_passHash) {
@@ -1087,7 +1093,9 @@ void dm_authDaemon()
                 {
                     Auth_NodeInfo* info = reinterpret_cast<Auth_NodeInfo*>(msg.m_payload);
                     if (!info->m_internal && info->m_node.m_NodeType == DS::Vault::e_NodeSDL) {
-                        // This is an SDL update. It needs to be passed off to the gameserver
+                        // This is an SDL update. It needs to be passed off to the gameserver, which
+                        // will consume the update and return an authoritative version for us to save.
+                        // This prevents race conditions between the AgeSDLHook and vault updates.
                         DS::PGresultRef result = DS::PQexecVA(s_postgres,
                                 "SELECT \"idx\" FROM game.\"Servers\" WHERE \"SdlIdx\"=$1",
                                 info->m_node.m_NodeIdx);
@@ -1098,8 +1106,11 @@ void dm_authDaemon()
                         }
                         if (PQntuples(result) != 0) {
                             uint32_t ageMcpId = strtoul(PQgetvalue(result, 0, 0), nullptr, 10);
-                            if (DS::GameServer_UpdateVaultSDL(info->m_node, ageMcpId)) {
-                                SEND_REPLY(info, DS::e_NetSuccess);
+                            // The update will respond with "AgeNotFound" if no matching game server
+                            // is found, making this effectively an authoritative update.
+                            uint32_t result = DS::GameServer_UpdateVaultSDL(info->m_node, ageMcpId);
+                            if (result != DS::e_NetAgeNotFound) {
+                                SEND_REPLY(info, result);
                                 break;
                             }
                         }
