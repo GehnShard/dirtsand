@@ -25,6 +25,7 @@
 #include <string_theory/stdio>
 #include <unordered_map>
 #include <chrono>
+#include <mutex>
 
 std::thread s_authDaemonThread;
 DS::MsgChannel s_authChannel;
@@ -38,8 +39,6 @@ std::unordered_map<ST::string, SDL::State, ST::hash_i, ST::equal_i> s_globalStat
 
 void dm_auth_addacct(Auth_AddAcct* msg)
 {
-    check_postgres(s_postgres);
-
     DS::PGresultRef result = DS::PQexecVA(s_postgres,
             "SELECT idx, \"AcctUuid\" FROM auth.\"Accounts\""
             "    WHERE LOWER(\"Login\")=LOWER($1)",
@@ -104,8 +103,6 @@ void dm_auth_shutdown()
 
 void dm_auth_login(Auth_LoginInfo* info)
 {
-    check_postgres(s_postgres);
-
     DEBUG_printf("[Auth] Login U:{} P:{} T:{} O:{}\n",
                  info->m_acctName, info->m_passHash.toString(),
                  info->m_token, info->m_os);
@@ -271,7 +268,6 @@ void dm_auth_disconnect(Auth_ClientMessage* msg)
     AuthServer_Private* client = reinterpret_cast<AuthServer_Private*>(msg->m_client);
     if (client->m_player.m_playerId) {
         // Mark player as offline
-        check_postgres(s_postgres);
         DS::PGresultRef result = DS::PQexecVA(s_postgres,
                 "UPDATE vault.\"Nodes\" SET"
                 "    \"Int32_1\"=0, \"String64_1\"='',"
@@ -294,8 +290,6 @@ void dm_auth_disconnect(Auth_ClientMessage* msg)
 
 void dm_auth_setPlayer(Auth_ClientMessage* msg)
 {
-    check_postgres(s_postgres);
-
     AuthServer_Private* client = reinterpret_cast<AuthServer_Private*>(msg->m_client);
     DS::PGresultRef result = DS::PQexecVA(s_postgres,
             "SELECT \"PlayerName\", \"AvatarShape\", \"Explorer\""
@@ -904,8 +898,6 @@ void dm_auth_acctFlags(Auth_AccountFlags* msg)
 
 void dm_auth_addAllPlayers(Auth_AddAllPlayers* msg)
 {
-    check_postgres(s_postgres);
-
     if (v_has_node(msg->m_playerId, s_allPlayers)) {
         if (!v_unref_node(msg->m_playerId, s_allPlayers)) {
             SEND_REPLY(msg, DS::e_NetInternalError);
@@ -1005,20 +997,8 @@ void dm_auth_update_globalSDL(Auth_UpdateGlobalSDL* msg)
     SEND_REPLY(msg, DS::e_NetInvalidParameter);
 }
 
-void dm_authDaemon()
+void dm_authInit()
 {
-    s_postgres = PQconnectdb(ST::format(
-                    "host='{}' port='{}' user='{}' password='{}' dbname='{}'",
-                    DS::Settings::DbHostname(), DS::Settings::DbPort(),
-                    DS::Settings::DbUsername(), DS::Settings::DbPassword(),
-                    DS::Settings::DbDbaseName()).c_str());
-    if (PQstatus(s_postgres) != CONNECTION_OK) {
-        ST::printf(stderr, "Error connecting to postgres: {}", PQerrorMessage(s_postgres));
-        PQfinish(s_postgres);
-        s_postgres = nullptr;
-        return;
-    }
-
     if (!dm_vault_init()) {
         fputs("[Auth] Vault failed to initialize\n", stderr);
         return;
@@ -1046,11 +1026,40 @@ void dm_authDaemon()
         PQ_PRINT_ERROR(s_postgres, UPDATE);
         // This doesn't block continuing...
     }
+}
+
+void dm_authCheck(bool reconnect)
+{
+    if (reconnect)
+        check_postgres(s_postgres);
+    if (PQstatus(s_postgres) != CONNECTION_OK)
+        return;
+
+    static std::once_flag s_authInit;
+    std::call_once(s_authInit, dm_authInit);
+}
+
+void dm_authDaemon()
+{
+    s_postgres = PQconnectdb(ST::format(
+                    "host='{}' port='{}' user='{}' password='{}' dbname='{}'",
+                    DS::Settings::DbHostname(), DS::Settings::DbPort(),
+                    DS::Settings::DbUsername(), DS::Settings::DbPassword(),
+                    DS::Settings::DbDbaseName()).c_str());
+    if (PQstatus(s_postgres) != CONNECTION_OK)
+        ST::printf(stderr, "Error connecting to postgres: {}", PQerrorMessage(s_postgres));
+
+    // If the connection to postgres was successful, initialize the vault here.
+    dm_authCheck(false);
 
     for ( ;; ) {
         DS::FifoMessage msg { -1, nullptr };
         try {
             msg = s_authChannel.getMessage();
+
+            // We have a message from a client. Make sure the vault is ready.
+            dm_authCheck(true);
+
             switch (msg.m_messageType) {
             case e_AuthShutdown:
                 dm_auth_shutdown();
